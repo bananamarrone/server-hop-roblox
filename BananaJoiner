@@ -1,8 +1,3 @@
--- BANANA JOINER v1
--- Reads your Discord webhook channel for server IDs posted by BananaScout
--- and spam-joins that server a configurable number of times.
--- Edit the CONFIG section below.
-
 local DISCORD_CHANNEL_ID  = "1481658438780977295"     -- Discord channel ID (right-click channel > Copy ID)
 local DISCORD_BOT_TOKEN   = "MTQ4MTY2MjE3NjMwODYyOTUxNg.Gg7VuV.Vmrk7IfQAfnz3DHujcI1p8YHLy_0jPoOy2r9xc"       -- Bot token with Read Messages permission
 local DEFAULT_SPAM_COUNT  = 50                           -- how many times to join by default
