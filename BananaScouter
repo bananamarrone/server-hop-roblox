@@ -2,9 +2,9 @@
 -- Scans servers, sends Discord webhook alert when brainrot >= threshold found
 -- Edit the CONFIG section below, then run this script on an alt account
 
-local WEBHOOK_URL    = "https://discord.com/api/webhooks/YOUR_WEBHOOK_HERE"
-local MIN_VALUE_MPS  = 50e6        -- minimum money/sec to report (50M default, edit freely)
-local MIN_PLAYERS    = 4           -- skip servers with fewer players
+local WEBHOOK_URL    = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
+local MIN_VALUE_MPS  = 1e6        -- minimum money/sec to report (50M default, edit freely)
+local MIN_PLAYERS    = 2           -- skip servers with fewer players
 local SCAN_WINDOW    = 2.5         -- seconds to scan each server before hopping
 local HOP_SETTLE     = 0.4         -- settle time after teleport before scanning
 local LOG_PREFIX     = "[SCOUT]"   -- prefix for executor console logs
