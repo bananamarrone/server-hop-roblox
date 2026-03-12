@@ -3,11 +3,11 @@
 -- and spam-joins that server a configurable number of times.
 -- Edit the CONFIG section below.
 
-local DISCORD_CHANNEL_ID  = "YOUR_CHANNEL_ID_HERE"     -- Discord channel ID (right-click channel > Copy ID)
-local DISCORD_BOT_TOKEN   = "YOUR_BOT_TOKEN_HERE"       -- Bot token with Read Messages permission
+local DISCORD_CHANNEL_ID  = "1481658438780977295"     -- Discord channel ID (right-click channel > Copy ID)
+local DISCORD_BOT_TOKEN   = "MTQ4MTY2MjE3NjMwODYyOTUxNg.Gg7VuV.Vmrk7IfQAfnz3DHujcI1p8YHLy_0jPoOy2r9xc"       -- Bot token with Read Messages permission
 local DEFAULT_SPAM_COUNT  = 50                           -- how many times to join by default
-local JOIN_COOLDOWN       = 0.5                          -- seconds between each join attempt
-local FETCH_INTERVAL      = 15                          -- how often to poll Discord for new alerts (seconds)
+local JOIN_COOLDOWN       = 0.1                          -- seconds between each join attempt
+local FETCH_INTERVAL      = 1                          -- how often to poll Discord for new alerts (seconds)
 local LOG_PREFIX          = "[JOINER]"
 
 -- NOTE: You need a Discord Bot (not just a webhook) to READ messages.
