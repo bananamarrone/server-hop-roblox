@@ -218,7 +218,7 @@ local function getNextServer()
     if #serverPool < 30 and not fetchingPage then refillPool() end
     if #serverPool == 0 then
         local t0 = tick()
-        repeat task.wait(0.05) until #serverPool > 0 or tick()-t0 > 4
+        repeat task.wait(0.05) until not hunting or #serverPool > 0 or tick()-t0 > 4
     end
     if #serverPool == 0 then return nil end
     return table.remove(serverPool, 1)
@@ -703,7 +703,7 @@ local function doHop()
             if ok then
                 showLoading(S.hopCount)
                 local t0=tick()
-                while tick()-t0 < 8 do task.wait(0.1) end
+                while hunting and tick()-t0 < 8 do task.wait(0.1) end
                 hideLoading()
                 return
             end
