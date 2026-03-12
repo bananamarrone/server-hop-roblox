@@ -28,8 +28,8 @@ local SAVE_FILE   = "BSH_state.json"
 local KEY_FILE    = "BSH_key.json"
 local SCRIPT_FILE = "BSH_v9.lua"
 
-local KEY_PASTEBIN = "https://pastebin.com/raw/XXXXXXXX"
-local WORK_INK_URL = "https://work.ink/YOUR_LINK"
+local KEY_PASTEBIN = "https://pastebin.com/raw/f52nCVwH"
+local WORK_INK_URL = "https://work.ink/2mMg/banana-serverhop-key"
 
 local MIN_PLAYERS  = 4     -- skip servers with fewer than this many players
 local HOP_COOLDOWN = 0.08  -- seconds between hops
