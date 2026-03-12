@@ -1,13 +1,11 @@
--- BANANA SCOUT v1
--- Scans servers, sends Discord webhook alert when brainrot >= threshold found
--- Edit the CONFIG section below, then run this script on an alt account
-
-local WEBHOOK_URL    = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
-local MIN_VALUE_MPS  = 1e6        -- minimum money/sec to report (50M default, edit freely)
-local MIN_PLAYERS    = 2           -- skip servers with fewer players
-local SCAN_WINDOW    = 2.5         -- seconds to scan each server before hopping
-local HOP_SETTLE     = 0.4         -- settle time after teleport before scanning
-local LOG_PREFIX     = "[SCOUT]"   -- prefix for executor console logs
+-- ============================================================
+-- CONFIG  (edit these)
+-- ============================================================
+local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
+local MIN_VALUE_MPS = 1e6    -- minimum money/s to report (default 50M/s)
+local MIN_PLAYERS   = 3
+local SCAN_WINDOW   = 1.5
+-- ============================================================
 
 local Players         = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
@@ -15,47 +13,40 @@ local HttpService     = game:GetService("HttpService")
 local UserInputService= game:GetService("UserInputService")
 local TweenService    = game:GetService("TweenService")
 local CoreGui         = game:GetService("CoreGui")
-local Workspace       = game:GetService("Workspace")
 
 local LP      = Players.LocalPlayer
 local PlaceId = game.PlaceId
 
-local SCOUT_FILE = "BSH_scout.json"
+local SCOUT_SAVE  = "BSH_scout.json"
+local SCRIPT_FILE = "BSH_scout_run.lua"
 
-local function log(msg)
-    print(LOG_PREFIX .. " " .. msg)
-end
+local function log(msg) print("[SCOUT] " .. tostring(msg)) end
 
 local function safeRead(f)
     if not (isfile and isfile(f)) then return nil end
-    local ok, d = pcall(readfile, f)
-    return ok and d or nil
+    local ok, d = pcall(readfile, f); return ok and d or nil
 end
-
 local function safeWrite(f, d)
     pcall(function() if writefile then writefile(f, d) end end)
 end
 
-local scoutState = {hopCount = 0, found = 0}
-local function saveScout()
-    local ok, enc = pcall(function() return HttpService:JSONEncode(scoutState) end)
-    if ok then safeWrite(SCOUT_FILE, enc) end
+local St = {hops=0, found=0}
+local function saveSt()
+    local ok,enc=pcall(function() return HttpService:JSONEncode(St) end)
+    if ok then safeWrite(SCOUT_SAVE,enc) end
 end
-local function loadScout()
-    local raw = safeRead(SCOUT_FILE); if not raw then return end
-    local ok, d = pcall(function() return HttpService:JSONDecode(raw) end)
-    if ok and type(d) == "table" then
-        if type(d.hopCount) == "number" then scoutState.hopCount = d.hopCount end
-        if type(d.found)    == "number" then scoutState.found    = d.found    end
+local function loadSt()
+    local raw=safeRead(SCOUT_SAVE); if not raw then return end
+    local ok,d=pcall(function() return HttpService:JSONDecode(raw) end)
+    if ok and type(d)=="table" then
+        if type(d.hops)=="number" then St.hops=d.hops end
+        if type(d.found)=="number" then St.found=d.found end
     end
 end
-loadScout()
+loadSt()
 
 local SCRIPT_SOURCE
-pcall(function()
-    local raw = safeRead("BSH_scout_run.lua")
-    if raw then SCRIPT_SOURCE = raw end
-end)
+pcall(function() local r=safeRead(SCRIPT_FILE); if r then SCRIPT_SOURCE=r end end)
 local function queueSelf()
     if not SCRIPT_SOURCE then return end
     pcall(function() if queue_on_teleport then queue_on_teleport(SCRIPT_SOURCE) end end)
@@ -63,310 +54,284 @@ local function queueSelf()
     pcall(function() if fluxus and fluxus.queue_on_teleport then fluxus.queue_on_teleport(SCRIPT_SOURCE) end end)
 end
 
-local function fmtVal(n)
-    if not n or n <= 0 then return "0" end
-    if n >= 1e12 then return string.format("%.2fT", n/1e12)
-    elseif n >= 1e9  then return string.format("%.2fB", n/1e9)
-    elseif n >= 1e6  then return string.format("%.2fM", n/1e6)
-    elseif n >= 1e3  then return string.format("%.1fK", n/1e3)
-    else return tostring(math.floor(n)) end
-end
-
 local function parseValue(raw)
-    if not raw or raw == "" then return 0 end
-    local t = raw:gsub("^%s*%$?%s*", ""):lower():gsub("%s+", "")
-    if t == "" then return 0 end
-    local n, s = t:match("^([%d%.]+)([kmbt]?)$")
-    n = tonumber(n)
+    if not raw or raw=="" then return 0 end
+    local t=raw:gsub("^%s*%$?%s*",""):lower():gsub("%s+","")
+    if t=="" then return 0 end
+    local n,s=t:match("^([%d%.]+)([kmbt]?)$"); n=tonumber(n)
     if not n then return 0 end
-    if     s == "k" then n = n * 1e3
-    elseif s == "m" then n = n * 1e6
-    elseif s == "b" then n = n * 1e9
-    elseif s == "t" then n = n * 1e12 end
+    if     s=="k" then n=n*1e3
+    elseif s=="m" then n=n*1e6
+    elseif s=="b" then n=n*1e9
+    elseif s=="t" then n=n*1e12 end
     return n
 end
 
-local function sendWebhook(brainrotName, valueMps, rawText, jobId, playerCount)
-    local valueStr = fmtVal(valueMps) .. "/s"
-    local joinCmd  = string.format("game:GetService('TeleportService'):TeleportToPlaceInstance(%d, '%s')", PlaceId, jobId)
-    local payload  = {
-        username   = "Banana Notifier",
-        avatar_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/Banana-Fruit-Sticker.svg/240px-Banana-Fruit-Sticker.svg.png",
-        embeds = {{
-            title       = "BRAINROT FOUND",
-            color       = 65407,
-            fields = {
-                {name = "Name",         value = brainrotName, inline = true},
-                {name = "Money/s",      value = "$" .. valueStr,          inline = true},
-                {name = "Players",      value = tostring(playerCount) .. "/8", inline = true},
-                {name = "Server ID",    value = "`" .. jobId .. "`",       inline = false},
-                {name = "Join Command", value = "```lua\n" .. joinCmd .. "\n```", inline = false},
-            },
-            footer = {text = "Banana Notifier  |  hop #" .. tostring(scoutState.hopCount) .. "  |  found: " .. tostring(scoutState.found)},
-            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        }}
-    }
-    local ok, enc = pcall(function() return HttpService:JSONEncode(payload) end)
-    if not ok then log("Failed to encode webhook payload"); return end
-    local postOk, err = pcall(function()
-        HttpService:PostAsync(WEBHOOK_URL, enc, Enum.HttpContentType.ApplicationJson)
-    end)
-    if postOk then
-        log("Webhook sent: " .. brainrotName .. " $" .. valueStr)
-    else
-        log("Webhook error: " .. tostring(err))
-    end
+local function fmtVal(n)
+    if not n or n<=0 then return "0" end
+    if     n>=1e12 then return string.format("%.2fT",n/1e12)
+    elseif n>=1e9  then return string.format("%.2fB",n/1e9)
+    elseif n>=1e6  then return string.format("%.2fM",n/1e6)
+    elseif n>=1e3  then return string.format("%.1fK",n/1e3)
+    else return tostring(math.floor(n)) end
 end
 
-local serverPool   = {}
-local nextCursor   = nil
-local fetchingPage = false
+-- Exact pattern from reference: AnimalOverhead -> parent.parent must be BasePart
+-- Reads Generation (money/s), DisplayName, Mutation
+local function findBest()
+    local bestV,bestN,bestM,bestR=-1,"?","",""
+    for _,o in ipairs(game:GetService("Workspace"):GetDescendants()) do
+        repeat
+            if o.Name~="AnimalOverhead" then break end
+            local p=o.Parent and o.Parent.Parent
+            if not (p and p:IsA("BasePart")) then break end
+            local gen=o:FindFirstChild("Generation"); if not gen then break end
+            local val=parseValue(gen.Text); if val<=0 then break end
+            local dObj=o:FindFirstChild("DisplayName")
+            local name=(dObj and dObj.Text~="") and dObj.Text or (o.Parent and o.Parent.Name) or "?"
+            local mObj=o:FindFirstChild("Mutation")
+            local mut=(mObj and mObj.Text~="") and mObj.Text or ""
+            if val>bestV then bestV=val; bestN=name; bestM=mut; bestR=gen.Text end
+        until true
+    end
+    return bestV,bestN,bestM,bestR
+end
+
+local function sendWebhook(name, val, mut, jobId, players)
+    local valStr="$"..fmtVal(val).."/s"
+    local mutStr=mut~="" and mut or "None"
+    local joinCmd=string.format(
+        "game:GetService('TeleportService'):TeleportToPlaceInstance(%d,'%s')",PlaceId,jobId)
+    local payload={
+        username="Banana Notifier",
+        embeds={{
+            title="BRAINROT FOUND",
+            color=16768000,
+            fields={
+                {name="Name",        value=name,                   inline=true},
+                {name="Money/s",     value=valStr,                 inline=true},
+                {name="Mutation",    value=mutStr,                 inline=true},
+                {name="Players",     value=tostring(players).."/8",inline=true},
+                {name="Server ID",   value="`"..jobId.."`",        inline=false},
+                {name="Join Command",value="```lua\n"..joinCmd.."\n```", inline=false},
+            },
+            footer={text="Banana Scout  |  hops: "..tostring(St.hops).."  |  found: "..tostring(St.found)},
+            timestamp=os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        }}
+    }
+    local ok,enc=pcall(function() return HttpService:JSONEncode(payload) end)
+    if not ok then log("Encode fail"); return end
+    local ok2,err=pcall(function()
+        HttpService:PostAsync(WEBHOOK_URL,enc,Enum.HttpContentType.ApplicationJson)
+    end)
+    if ok2 then log("Webhook sent: "..name.." "..valStr)
+    else log("Webhook err: "..tostring(err)) end
+end
+
+local serverPool={}
+local nextCursor=nil
+local fetchingPage=false
 
 local function fetchPage(cursor)
-    local url = string.format(
-        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100", PlaceId)
-    if cursor and cursor ~= "" then url = url .. "&cursor=" .. cursor end
-    local ok, res = pcall(function() return HttpService:JSONDecode(game:HttpGet(url)) end)
-    if not ok or not res or not res.data then return {}, nil end
-    local list = {}
-    for _, sv in ipairs(res.data) do
-        if sv.id and sv.id ~= game.JobId and (sv.playing or 0) >= MIN_PLAYERS then
-            table.insert(list, sv)
+    local url=string.format(
+        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100",PlaceId)
+    if cursor and cursor~="" then url=url.."&cursor="..cursor end
+    local ok,res=pcall(function() return HttpService:JSONDecode(game:HttpGet(url)) end)
+    if not ok or not res or not res.data then return {},nil end
+    local list={}
+    for _,sv in ipairs(res.data) do
+        if sv.id and sv.id~=game.JobId and (sv.playing or 0)>=MIN_PLAYERS then
+            table.insert(list,sv)
         end
     end
-    local nc = (res.nextPageCursor and res.nextPageCursor ~= "") and res.nextPageCursor or nil
-    return list, nc
+    local nc=(res.nextPageCursor and res.nextPageCursor~="") and res.nextPageCursor or nil
+    return list,nc
 end
 
 local function refillPool()
     if fetchingPage then return end
-    fetchingPage = true
+    fetchingPage=true
     task.spawn(function()
-        local batch, nc = fetchPage(nextCursor)
-        for i = #batch, 2, -1 do
-            local j = math.random(i); batch[i], batch[j] = batch[j], batch[i]
-        end
-        for _, sv in ipairs(batch) do table.insert(serverPool, sv) end
-        nextCursor = nc; fetchingPage = false
-        if #serverPool < 50 and nc then refillPool() end
+        local batch,nc=fetchPage(nextCursor)
+        for i=#batch,2,-1 do local j=math.random(i); batch[i],batch[j]=batch[j],batch[i] end
+        for _,sv in ipairs(batch) do table.insert(serverPool,sv) end
+        nextCursor=nc; fetchingPage=false
+        if #serverPool<50 and nc then refillPool() end
     end)
 end
 
 local function getNextServer()
-    if #serverPool < 30 and not fetchingPage then refillPool() end
-    if #serverPool == 0 then
-        local t0 = tick()
-        repeat task.wait(0.05) until #serverPool > 0 or tick()-t0 > 5
+    if #serverPool<30 and not fetchingPage then refillPool() end
+    if #serverPool==0 then
+        local t0=tick(); repeat task.wait(0.05) until #serverPool>0 or tick()-t0>4
     end
-    if #serverPool == 0 then return nil end
-    return table.remove(serverPool, 1)
+    if #serverPool==0 then return nil end
+    return table.remove(serverPool,1)
 end
 
 task.spawn(function()
-    for _ = 1, 3 do
-        if not fetchingPage then refillPool() end
-        task.wait(0.1)
-    end
+    for _=1,3 do if not fetchingPage then refillPool() end; task.wait(0.1) end
 end)
 
-local function readOverhead(o)
-    if not o or not o.Parent then return nil end
-    if not o:IsDescendantOf(Workspace) then return nil end
-    local g = o:FindFirstChild("Generation")
-    if not g or not g:IsA("TextLabel") then return nil end
-    local v = parseValue(g.Text)
-    if v <= 0 then return nil end
-    local dObj = o:FindFirstChild("DisplayName")
-    local name = (dObj and dObj:IsA("TextLabel") and dObj.Text ~= "") and dObj.Text
-                 or (o.Parent and o.Parent.Name) or "?"
-    return v, name, g.Text
-end
+local running=true
 
-local function scanBest()
-    local bV, bN, bR = -1, "?", ""
-    for _, o in next, Workspace:GetDescendants() do
-        if o.Name == "AnimalOverhead" then
-            local v, n, r = readOverhead(o)
-            if v and v > bV then bV = v; bN = n; bR = r end
-        end
-    end
-    return bV, bN, bR
-end
+local C3=Color3.fromRGB; local U2=UDim2.new
 
 local function dismissPopups()
     pcall(function()
-        for _, obj in ipairs(CoreGui:GetDescendants()) do
+        for _,obj in ipairs(CoreGui:GetDescendants()) do
             if obj:IsA("TextButton") then
-                local t = obj.Text:lower()
-                if t == "ok" or t == "okay" or t == "leave" then
-                    pcall(function() obj.MouseButton1Click:Fire() end)
-                end
+                local t=obj.Text:lower()
+                if t=="ok" or t=="okay" or t=="leave" then pcall(function() obj.MouseButton1Click:Fire() end) end
             end
         end
     end)
 end
 
-local running = true
+for _,v in ipairs(CoreGui:GetChildren()) do
+    if type(v.Name)=="string" and v.Name=="BSH_Scout" then v:Destroy() end
+end
 
-local StatusGui = Instance.new("ScreenGui")
-StatusGui.Name = "BSH_Scout_Status"; StatusGui.DisplayOrder = 100; StatusGui.ResetOnSpawn = false
-StatusGui.IgnoreGuiInset = true; StatusGui.Parent = CoreGui
+local Gui=Instance.new("ScreenGui"); Gui.Name="BSH_Scout"; Gui.DisplayOrder=100
+Gui.ResetOnSpawn=false; Gui.IgnoreGuiInset=true; Gui.Parent=CoreGui
 
-local StatusCard = Instance.new("Frame", StatusGui)
-StatusCard.Size = UDim2.new(0, 240, 0, 80); StatusCard.Position = UDim2.new(0, 10, 0, 10)
-StatusCard.BackgroundColor3 = Color3.fromRGB(7,9,14); StatusCard.BorderSizePixel = 0; StatusCard.Active = true
-local scc = Instance.new("UICorner", StatusCard); scc.CornerRadius = UDim.new(0, 10)
-local scs = Instance.new("UIStroke", StatusCard); scs.Color = Color3.fromRGB(0,180,100); scs.Thickness = 1
+local Card=Instance.new("Frame",Gui); Card.Size=U2(0,250,0,96); Card.Position=U2(0,10,0,10)
+Card.BackgroundColor3=C3(7,9,14); Card.BorderSizePixel=0; Card.Active=true
+Instance.new("UICorner",Card).CornerRadius=UDim.new(0,10)
+Instance.new("UIStroke",Card).Color=C3(0,160,100)
 
-local AccBar2 = Instance.new("Frame", StatusCard); AccBar2.Size = UDim2.new(1,0,0,2); AccBar2.BackgroundColor3 = Color3.fromRGB(0,220,120); AccBar2.BorderSizePixel = 0
-local acbg = Instance.new("UIGradient", AccBar2)
-acbg.Color = ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(0,200,255)),ColorSequenceKeypoint.new(1,Color3.fromRGB(0,255,160))})
+local acc=Instance.new("Frame",Card); acc.Size=U2(1,0,0,2); acc.BackgroundColor3=C3(0,220,120); acc.BorderSizePixel=0
+Instance.new("UIGradient",acc).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,200,255)),ColorSequenceKeypoint.new(1,C3(0,255,160))})
 
-local STitleL = Instance.new("TextLabel", StatusCard); STitleL.Size = UDim2.new(1,-12,0,18); STitleL.Position = UDim2.new(0,8,0,6)
-STitleL.BackgroundTransparency = 1; STitleL.Font = Enum.Font.GothamBold; STitleL.TextSize = 11
-STitleL.Text = "BANANA SCOUT  RUNNING"; STitleL.TextColor3 = Color3.fromRGB(0,220,140); STitleL.TextXAlignment = Enum.TextXAlignment.Left
+local TTL=Instance.new("TextLabel",Card); TTL.Size=U2(1,-10,0,18); TTL.Position=U2(0,8,0,6)
+TTL.BackgroundTransparency=1; TTL.Font=Enum.Font.GothamBold; TTL.TextSize=11
+TTL.Text="BANANA SCOUT  RUNNING"; TTL.TextColor3=C3(0,220,140); TTL.TextXAlignment=Enum.TextXAlignment.Left
 
-local SStatL = Instance.new("TextLabel", StatusCard); SStatL.Size = UDim2.new(1,-12,0,14); SStatL.Position = UDim2.new(0,8,0,26)
-SStatL.BackgroundTransparency = 1; SStatL.Font = Enum.Font.Gotham; SStatL.TextSize = 10
-SStatL.Text = "Starting..."; SStatL.TextColor3 = Color3.fromRGB(100,130,170); SStatL.TextXAlignment = Enum.TextXAlignment.Left
+local STL=Instance.new("TextLabel",Card); STL.Size=U2(1,-10,0,14); STL.Position=U2(0,8,0,26)
+STL.BackgroundTransparency=1; STL.Font=Enum.Font.Gotham; STL.TextSize=10
+STL.Text="Starting..."; STL.TextColor3=C3(100,130,170); STL.TextXAlignment=Enum.TextXAlignment.Left
 
-local SPoolL = Instance.new("TextLabel", StatusCard); SPoolL.Size = UDim2.new(1,-12,0,12); SPoolL.Position = UDim2.new(0,8,0,42)
-SPoolL.BackgroundTransparency = 1; SPoolL.Font = Enum.Font.Gotham; SPoolL.TextSize = 9
-SPoolL.Text = "pool: 0  hops: 0  found: 0"; SPoolL.TextColor3 = Color3.fromRGB(50,70,100); SPoolL.TextXAlignment = Enum.TextXAlignment.Left
+local SPL=Instance.new("TextLabel",Card); SPL.Size=U2(1,-10,0,12); SPL.Position=U2(0,8,0,42)
+SPL.BackgroundTransparency=1; SPL.Font=Enum.Font.Gotham; SPL.TextSize=9
+SPL.Text="pool: 0  hops: 0  found: 0"; SPL.TextColor3=C3(50,70,100); SPL.TextXAlignment=Enum.TextXAlignment.Left
 
-local StopBtn2 = Instance.new("TextButton", StatusCard); StopBtn2.Size = UDim2.new(1,-16,0,18); StopBtn2.Position = UDim2.new(0,8,0,56)
-StopBtn2.BackgroundColor3 = Color3.fromRGB(60,15,15); StopBtn2.BorderSizePixel = 0
-StopBtn2.Font = Enum.Font.GothamBold; StopBtn2.TextSize = 10; StopBtn2.Text = "STOP SCOUT"
-StopBtn2.TextColor3 = Color3.fromRGB(220,80,80); StopBtn2.AutoButtonColor = false
-local stbc = Instance.new("UICorner", StopBtn2); stbc.CornerRadius = UDim.new(0, 5)
-StopBtn2.MouseButton1Click:Connect(function()
-    running = false; STitleL.Text = "SCOUT STOPPED"; STitleL.TextColor3 = Color3.fromRGB(200,60,60)
-    log("Scout stopped by user.")
+local StopB=Instance.new("TextButton",Card); StopB.Size=U2(1,-16,0,22); StopB.Position=U2(0,8,0,58)
+StopB.BackgroundColor3=C3(50,14,14); StopB.BorderSizePixel=0; StopB.Font=Enum.Font.GothamBold
+StopB.TextSize=10; StopB.Text="STOP SCOUT"; StopB.TextColor3=C3(220,70,70); StopB.AutoButtonColor=false
+Instance.new("UICorner",StopB).CornerRadius=UDim.new(0,5)
+StopB.MouseButton1Click:Connect(function()
+    running=false; TTL.Text="SCOUT STOPPED"; TTL.TextColor3=C3(200,60,60); log("Stopped by user.")
 end)
 
-local dragOn2 = false; local dragOff2 = Vector2.new()
-StatusCard.InputBegan:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragOn2 = true; dragOff2 = Vector2.new(i.Position.X - StatusCard.AbsolutePosition.X, i.Position.Y - StatusCard.AbsolutePosition.Y)
+local dOn=false; local dOff=Vector2.new()
+Card.InputBegan:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 then
+        dOn=true; dOff=Vector2.new(i.Position.X-Card.AbsolutePosition.X,i.Position.Y-Card.AbsolutePosition.Y)
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
-    if dragOn2 and i.UserInputType == Enum.UserInputType.MouseMovement then
-        StatusCard.Position = UDim2.new(0, i.Position.X - dragOff2.X, 0, i.Position.Y - dragOff2.Y)
+    if dOn and i.UserInputType==Enum.UserInputType.MouseMovement then
+        Card.Position=U2(0,i.Position.X-dOff.X,0,i.Position.Y-dOff.Y)
     end
 end)
 UserInputService.InputEnded:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 then dragOn2 = false end
+    if i.UserInputType==Enum.UserInputType.MouseButton1 then dOn=false end
 end)
 
 task.spawn(function()
     while running do
-        SPoolL.Text = "pool: " .. tostring(#serverPool) .. "  hops: " .. tostring(scoutState.hopCount) .. "  found: " .. tostring(scoutState.found)
+        SPL.Text="pool: "..tostring(#serverPool).."  hops: "..tostring(St.hops).."  found: "..tostring(St.found)
         task.wait(1)
     end
 end)
-
 task.spawn(function()
-    while running do
-        dismissPopups(); task.wait(0.3)
-    end
+    while running do dismissPopups(); task.wait(0.3) end
 end)
 
-log("Scout started. Min value: $" .. fmtVal(MIN_VALUE_MPS) .. "/s  PlaceId: " .. tostring(PlaceId))
+log("Started. Min: $"..fmtVal(MIN_VALUE_MPS).."/s  PlaceId: "..tostring(PlaceId))
 
-local function doScoutHop(srv)
+local function doHop(srv)
     queueSelf()
-    local ok = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PlaceId, srv.id, LP)
-    end)
+    local ok=pcall(function() TeleportService:TeleportToPlaceInstance(PlaceId,srv.id,LP) end)
     if ok then
-        scoutState.hopCount = scoutState.hopCount + 1; saveScout()
-        log("Hopping to server " .. srv.id .. " (hop #" .. tostring(scoutState.hopCount) .. ")")
+        St.hops=St.hops+1; saveSt()
+        log("Hop #"..tostring(St.hops).." -> "..srv.id)
+        local t0=tick(); while tick()-t0<8 do task.wait(0.1) end
     else
-        log("Teleport failed for " .. srv.id)
+        log("Teleport failed for "..srv.id)
     end
-    task.wait(4)
 end
 
 task.spawn(function()
     while running do
-        task.wait(HOP_SETTLE)
+        task.wait(0.4)
         if not running then break end
 
-        local bestV, bestN, bestR = -1, "?", ""
-        local lastSeen = tick()
+        local bestV,bestN,bestM,bestR=-1,"?","",""
+        local lastArrival=tick()
         local conn
 
-        conn = Workspace.DescendantAdded:Connect(function(obj)
+        conn=game:GetService("Workspace").DescendantAdded:Connect(function(obj)
             if not running then conn:Disconnect(); return end
-            if obj.Name ~= "AnimalOverhead" then return end
+            if obj.Name~="AnimalOverhead" then return end
             task.spawn(function()
-                task.wait(0.05)
+                task.wait(0.03)
                 if not running then return end
-                local v, n, r = readOverhead(obj)
-                if not v then return end
-                lastSeen = tick()
-                if v > bestV then bestV = v; bestN = n; bestR = r end
-                SStatL.Text = "SCANNING  $" .. fmtVal(bestV) .. "/s"
-                SStatL.TextColor3 = Color3.fromRGB(0, 200, 130)
+                local p=obj.Parent and obj.Parent.Parent
+                if not (p and p:IsA("BasePart")) then return end
+                local gen=obj:FindFirstChild("Generation"); if not gen then return end
+                local val=parseValue(gen.Text); if val<=0 then return end
+                local dObj=obj:FindFirstChild("DisplayName")
+                local name=(dObj and dObj.Text~="") and dObj.Text or (obj.Parent and obj.Parent.Name) or "?"
+                local mObj=obj:FindFirstChild("Mutation")
+                local mut=(mObj and mObj.Text~="") and mObj.Text or ""
+                lastArrival=tick()
+                if val>bestV then bestV=val; bestN=name; bestM=mut; bestR=gen.Text end
+                STL.Text="SCANNING  $"..fmtVal(bestV).."/s"; STL.TextColor3=C3(0,200,130)
             end)
         end)
 
-        local v0, n0, r0 = scanBest()
-        if v0 > bestV then bestV = v0; bestN = n0; bestR = r0 end
-        if bestV > 0 then
-            SStatL.Text = "SCANNING  $" .. fmtVal(bestV) .. "/s"
-            SStatL.TextColor3 = Color3.fromRGB(0, 200, 130)
-        else
-            SStatL.Text = "SCANNING server..."
-            SStatL.TextColor3 = Color3.fromRGB(60, 130, 90)
-        end
+        STL.Text="SCANNING..."; STL.TextColor3=C3(60,130,90)
+        local v0,n0,m0,r0=findBest()
+        if v0>bestV then bestV=v0; bestN=n0; bestM=m0; bestR=r0 end
+        if bestV>0 then STL.Text="SCANNING  $"..fmtVal(bestV).."/s"; STL.TextColor3=C3(0,200,130) end
 
-        local windowStart = tick()
+        local t0=tick()
         while running do
-            local elapsed = tick() - windowStart
-            if elapsed > 0.5 and bestV <= 0 and (tick() - lastSeen) > 0.5 then break end
-            if elapsed >= SCAN_WINDOW then break end
+            local el=tick()-t0
+            if el>0.4 and bestV<=0 and tick()-lastArrival>0.4 then break end
+            if el>=SCAN_WINDOW then break end
             task.wait(0.05)
         end
-
         conn:Disconnect()
         if not running then break end
 
-        if bestV >= MIN_VALUE_MPS then
-            local playerCount = #Players:GetPlayers()
-            local jobId = game.JobId
-            log("FOUND: " .. bestN .. " $" .. fmtVal(bestV) .. "/s  server: " .. jobId)
-            scoutState.found = scoutState.found + 1; saveScout()
-            SStatL.Text = "FOUND: " .. bestN .. " $" .. fmtVal(bestV) .. "/s"
-            SStatL.TextColor3 = Color3.fromRGB(0, 255, 140)
-            sendWebhook(bestN, bestV, bestR, jobId, playerCount)
-            task.wait(10)
+        if bestV>=MIN_VALUE_MPS then
+            St.found=St.found+1; saveSt()
+            local jobId=game.JobId
+            local players=#Players:GetPlayers()
+            log("FOUND: "..bestN.." $"..fmtVal(bestV).."/s  mut:"..bestM.."  srv:"..jobId)
+            STL.Text="FOUND: "..bestN.."  $"..fmtVal(bestV).."/s"; STL.TextColor3=C3(0,255,140)
+            sendWebhook(bestN,bestV,bestM,jobId,players)
+            task.wait(8)
         else
-            if bestV > 0 then
-                log("Not good enough: " .. bestN .. " $" .. fmtVal(bestV) .. "/s  (need $" .. fmtVal(MIN_VALUE_MPS) .. "/s)")
+            if bestV>0 then
+                log("Too low: "..bestN.." $"..fmtVal(bestV).."/s")
+                STL.Text="Too low: $"..fmtVal(bestV).."/s"; STL.TextColor3=C3(80,100,140)
             else
-                log("No brainrots found in this server.")
+                log("No brainrots.")
+                STL.Text="Empty server"; STL.TextColor3=C3(55,70,100)
             end
-            SStatL.Text = bestV > 0 and ("Too low: $" .. fmtVal(bestV) .. "/s") or "Empty server"
-            SStatL.TextColor3 = Color3.fromRGB(80, 100, 140)
         end
 
         if not running then break end
-
-        local srv = getNextServer()
+        local srv=getNextServer()
         if not srv then
             log("Pool empty, refilling...")
-            nextCursor = nil; refillPool()
-            local t0 = tick()
-            repeat task.wait(0.1) until #serverPool > 0 or tick()-t0 > 8
-            srv = getNextServer()
+            nextCursor=nil; refillPool()
+            local tw=tick(); repeat task.wait(0.1) until #serverPool>0 or tick()-tw>6
+            srv=getNextServer()
         end
-        if srv then
-            doScoutHop(srv)
-        else
-            log("No servers available, waiting 5s...")
-            task.wait(5)
-        end
+        if srv then doHop(srv) else log("No servers. Waiting 5s."); task.wait(5) end
     end
 end)
