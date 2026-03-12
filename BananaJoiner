@@ -1,0 +1,341 @@
+-- BANANA JOINER v1
+-- Reads your Discord webhook channel for server IDs posted by BananaScout
+-- and spam-joins that server a configurable number of times.
+-- Edit the CONFIG section below.
+
+local DISCORD_CHANNEL_ID  = "YOUR_CHANNEL_ID_HERE"     -- Discord channel ID (right-click channel > Copy ID)
+local DISCORD_BOT_TOKEN   = "YOUR_BOT_TOKEN_HERE"       -- Bot token with Read Messages permission
+local DEFAULT_SPAM_COUNT  = 50                           -- how many times to join by default
+local JOIN_COOLDOWN       = 0.5                          -- seconds between each join attempt
+local FETCH_INTERVAL      = 15                          -- how often to poll Discord for new alerts (seconds)
+local LOG_PREFIX          = "[JOINER]"
+
+-- NOTE: You need a Discord Bot (not just a webhook) to READ messages.
+-- Steps: discord.com/developers > New Application > Bot > copy token
+-- Invite bot to your server with Read Messages permission.
+-- The bot reads the webhook channel for messages sent by BananaScout.
+
+local Players         = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService     = game:GetService("HttpService")
+local UserInputService= game:GetService("UserInputService")
+local TweenService    = game:GetService("TweenService")
+local CoreGui         = game:GetService("CoreGui")
+
+local LP      = Players.LocalPlayer
+local PlaceId = game.PlaceId
+
+local function log(msg)
+    print(LOG_PREFIX .. " " .. msg)
+end
+
+local function fmtVal(n)
+    if not n or n <= 0 then return "0" end
+    if n >= 1e12 then return string.format("%.2fT", n/1e12)
+    elseif n >= 1e9  then return string.format("%.2fB", n/1e9)
+    elseif n >= 1e6  then return string.format("%.2fM", n/1e6)
+    elseif n >= 1e3  then return string.format("%.1fK", n/1e3)
+    else return tostring(math.floor(n)) end
+end
+
+local function dismissPopups()
+    pcall(function()
+        for _, obj in ipairs(CoreGui:GetDescendants()) do
+            if obj:IsA("TextButton") then
+                local t = obj.Text:lower()
+                if t == "ok" or t == "okay" or t == "leave" then
+                    pcall(function() obj.MouseButton1Click:Fire() end)
+                end
+            end
+        end
+    end)
+end
+
+local seenMessageIds = {}
+local joinQueue      = {}
+local isJoining      = false
+local totalJoins     = 0
+local running        = true
+
+local function fetchDiscordMessages()
+    local url = "https://discord.com/api/v10/channels/" .. DISCORD_CHANNEL_ID .. "/messages?limit=10"
+    local headers = {Authorization = "Bot " .. DISCORD_BOT_TOKEN}
+    local ok, res = pcall(function()
+        return HttpService:GetAsync(url, false, headers)
+    end)
+    if not ok or not res then
+        log("Failed to fetch Discord messages: " .. tostring(res))
+        return {}
+    end
+    local decOk, msgs = pcall(function() return HttpService:JSONDecode(res) end)
+    if not decOk or type(msgs) ~= "table" then
+        log("Failed to decode Discord response")
+        return {}
+    end
+    return msgs
+end
+
+local function extractJobId(text)
+    local jobId = text:match("([0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+)")
+    return jobId
+end
+
+local function extractBrainrotName(embedFields)
+    if not embedFields then return "Unknown" end
+    for _, field in ipairs(embedFields) do
+        if field.name == "Name" then return field.value end
+    end
+    return "Unknown"
+end
+
+local function extractValueStr(embedFields)
+    if not embedFields then return "?" end
+    for _, field in ipairs(embedFields) do
+        if field.name == "Money/s" then return field.value end
+    end
+    return "?"
+end
+
+local function parseNewAlerts(msgs)
+    local alerts = {}
+    for _, msg in ipairs(msgs) do
+        if seenMessageIds[msg.id] then break end
+        seenMessageIds[msg.id] = true
+        if msg.embeds and #msg.embeds > 0 then
+            for _, embed in ipairs(msg.embeds) do
+                if embed.title == "BRAINROT FOUND" and embed.fields then
+                    local jobId = nil
+                    for _, field in ipairs(embed.fields) do
+                        if field.name == "Server ID" then
+                            jobId = field.value:match("([0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+)")
+                        end
+                    end
+                    if jobId then
+                        table.insert(alerts, {
+                            jobId     = jobId,
+                            name      = extractBrainrotName(embed.fields),
+                            valueStr  = extractValueStr(embed.fields),
+                            msgId     = msg.id,
+                        })
+                        log("New alert: " .. extractBrainrotName(embed.fields) .. " " .. extractValueStr(embed.fields) .. " ID: " .. jobId)
+                    end
+                end
+            end
+        end
+    end
+    return alerts
+end
+
+local C3  = Color3.fromRGB
+local U2  = UDim2.new
+local TI  = TweenInfo.new
+
+for _, v in ipairs(CoreGui:GetChildren()) do
+    if type(v.Name) == "string" and v.Name == "BSH_Joiner" then v:Destroy() end
+end
+
+local Gui = Instance.new("ScreenGui")
+Gui.Name = "BSH_Joiner"; Gui.DisplayOrder = 200; Gui.ResetOnSpawn = false
+Gui.IgnoreGuiInset = true; Gui.Parent = CoreGui
+
+local Card = Instance.new("Frame", Gui)
+Card.Size = U2(0, 300, 0, 310); Card.Position = U2(0, 10, 0, 10)
+Card.BackgroundColor3 = C3(7,9,14); Card.BorderSizePixel = 0; Card.Active = true
+local cardc = Instance.new("UICorner", Card); cardc.CornerRadius = UDim.new(0, 14)
+local cards = Instance.new("UIStroke", Card); cards.Color = C3(22,34,55)
+
+local AccBar3 = Instance.new("Frame", Card); AccBar3.Size = U2(1,0,0,2); AccBar3.BackgroundColor3 = C3(255,160,30); AccBar3.BorderSizePixel = 0
+local ab3g = Instance.new("UIGradient", AccBar3)
+ab3g.Color = ColorSequence.new({ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,200,50))})
+
+local TitleRow = Instance.new("Frame", Card); TitleRow.Size = U2(1,0,0,40); TitleRow.Position = U2(0,0,0,2); TitleRow.BackgroundTransparency = 1
+local TitleLbl = Instance.new("TextLabel", TitleRow); TitleLbl.Size = U2(1,-10,1,0); TitleLbl.Position = U2(0,10,0,0)
+TitleLbl.BackgroundTransparency = 1; TitleLbl.Font = Enum.Font.GothamBold; TitleLbl.TextSize = 12
+TitleLbl.Text = "BANANA JOINER"; TitleLbl.TextColor3 = C3(255,200,80); TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local function mkDiv2(y)
+    local d = Instance.new("Frame", Card); d.Size = U2(1,-24,0,1); d.Position = U2(0,12,0,y)
+    d.BackgroundColor3 = C3(18,28,45); d.BorderSizePixel = 0
+end
+mkDiv2(44)
+
+local StatusLbl = Instance.new("TextLabel", Card); StatusLbl.Size = U2(1,-20,0,16); StatusLbl.Position = U2(0,10,0,50)
+StatusLbl.BackgroundTransparency = 1; StatusLbl.Font = Enum.Font.GothamBold; StatusLbl.TextSize = 11
+StatusLbl.Text = "Waiting for alerts..."; StatusLbl.TextColor3 = C3(80,100,140); StatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local AlertLbl = Instance.new("TextLabel", Card); AlertLbl.Size = U2(1,-20,0,28); AlertLbl.Position = U2(0,10,0,68)
+AlertLbl.BackgroundTransparency = 1; AlertLbl.Font = Enum.Font.Gotham; AlertLbl.TextSize = 10
+AlertLbl.Text = "No alerts received yet.\nWaiting for BananaScout to post..."; AlertLbl.TextColor3 = C3(50,70,100)
+AlertLbl.TextXAlignment = Enum.TextXAlignment.Left; AlertLbl.TextWrapped = true
+
+mkDiv2(98)
+
+local SpamLabel = Instance.new("TextLabel", Card); SpamLabel.Size = U2(1,-20,0,14); SpamLabel.Position = U2(0,10,0,104)
+SpamLabel.BackgroundTransparency = 1; SpamLabel.Font = Enum.Font.GothamBold; SpamLabel.TextSize = 8
+SpamLabel.Text = "JOIN SPAM COUNT"; SpamLabel.TextColor3 = C3(100,140,200); SpamLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local SpamFrm = Instance.new("Frame", Card); SpamFrm.Size = U2(1,-20,0,30); SpamFrm.Position = U2(0,10,0,120)
+SpamFrm.BackgroundColor3 = C3(11,16,26); SpamFrm.BorderSizePixel = 0
+local sfc = Instance.new("UICorner", SpamFrm); sfc.CornerRadius = UDim.new(0, 8)
+local sfstroke = Instance.new("UIStroke", SpamFrm); sfstroke.Color = C3(30,50,80)
+
+local SpamInput = Instance.new("TextBox", SpamFrm); SpamInput.Size = U2(1,-16,1,0); SpamInput.Position = U2(0,8,0,0)
+SpamInput.BackgroundTransparency = 1; SpamInput.Font = Enum.Font.GothamBold; SpamInput.TextSize = 14
+SpamInput.Text = tostring(DEFAULT_SPAM_COUNT); SpamInput.TextColor3 = C3(230,245,255)
+SpamInput.ClearTextOnFocus = false; SpamInput.BorderSizePixel = 0
+SpamInput.PlaceholderText = "50"; SpamInput.PlaceholderColor3 = C3(40,55,80)
+
+local function getSpamCount()
+    local n = tonumber(SpamInput.Text)
+    if not n or n < 1 then return DEFAULT_SPAM_COUNT end
+    return math.floor(math.min(n, 500))
+end
+
+mkDiv2(158)
+
+local ProgressLbl = Instance.new("TextLabel", Card); ProgressLbl.Size = U2(1,-20,0,14); ProgressLbl.Position = U2(0,10,0,164)
+ProgressLbl.BackgroundTransparency = 1; ProgressLbl.Font = Enum.Font.Gotham; ProgressLbl.TextSize = 10
+ProgressLbl.Text = "joins: 0  queue: 0"; ProgressLbl.TextColor3 = C3(50,75,110); ProgressLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local ProgressBG = Instance.new("Frame", Card); ProgressBG.Size = U2(1,-20,0,5); ProgressBG.Position = U2(0,10,0,180)
+ProgressBG.BackgroundColor3 = C3(14,22,36); ProgressBG.BorderSizePixel = 0
+local pbgc = Instance.new("UICorner", ProgressBG); pbgc.CornerRadius = UDim.new(1,0)
+local ProgressBar = Instance.new("Frame", ProgressBG); ProgressBar.Size = U2(0,0,1,0); ProgressBar.BackgroundColor3 = C3(255,160,30); ProgressBar.BorderSizePixel = 0
+local pbc = Instance.new("UICorner", ProgressBar); pbc.CornerRadius = UDim.new(1,0)
+local pbg = Instance.new("UIGradient", ProgressBar)
+pbg.Color = ColorSequence.new({ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,220,60))})
+
+mkDiv2(192)
+
+local LogTitle = Instance.new("TextLabel", Card); LogTitle.Size = U2(1,-20,0,14); LogTitle.Position = U2(0,10,0,198)
+LogTitle.BackgroundTransparency = 1; LogTitle.Font = Enum.Font.GothamBold; LogTitle.TextSize = 8
+LogTitle.Text = "ACTIVITY LOG"; LogTitle.TextColor3 = C3(60,80,120); LogTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local LogScroll = Instance.new("ScrollingFrame", Card); LogScroll.Size = U2(1,-20,0,68); LogScroll.Position = U2(0,10,0,214)
+LogScroll.BackgroundColor3 = C3(9,12,20); LogScroll.BorderSizePixel = 0
+LogScroll.ScrollBarThickness = 2; LogScroll.ScrollBarImageColor3 = C3(40,70,110); LogScroll.CanvasSize = U2(0,0,0,0)
+local lsc = Instance.new("UICorner", LogScroll); lsc.CornerRadius = UDim.new(0,6)
+local lsl = Instance.new("UIListLayout", LogScroll)
+lsl.SortOrder = Enum.SortOrder.LayoutOrder; lsl.Padding = UDim.new(0,1)
+
+local logLines = {}
+local logOrder = 0
+local function addLog(msg)
+    logOrder = logOrder + 1
+    log(msg)
+    local lbl = Instance.new("TextLabel", LogScroll)
+    lbl.Size = U2(1,-8,0,14); lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.Gotham; lbl.TextSize = 9
+    lbl.Text = msg; lbl.TextColor3 = C3(80,110,160)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.LayoutOrder = logOrder
+    table.insert(logLines, lbl)
+    if #logLines > 20 then
+        logLines[1]:Destroy(); table.remove(logLines, 1)
+    end
+    LogScroll.CanvasSize = U2(0,0,0,#logLines*15)
+    LogScroll.CanvasPosition = Vector2.new(0, math.max(0, #logLines*15 - 68))
+end
+
+mkDiv2(288)
+
+local JoinBtn = Instance.new("TextButton", Card); JoinBtn.Size = U2(1,-20,0,14); JoinBtn.Position = U2(0,10,0,294)
+JoinBtn.BackgroundTransparency = 1; JoinBtn.BorderSizePixel = 0; JoinBtn.Font = Enum.Font.Gotham
+JoinBtn.TextSize = 9; JoinBtn.Text = "STOP JOINER"; JoinBtn.TextColor3 = C3(150,50,50); JoinBtn.AutoButtonColor = false
+JoinBtn.MouseButton1Click:Connect(function()
+    running = false; StatusLbl.Text = "JOINER STOPPED"; StatusLbl.TextColor3 = C3(180,50,50)
+    addLog("Joiner stopped by user.")
+end)
+
+local dragOn3 = false; local dragOff3 = Vector2.new()
+TitleRow.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragOn3 = true; dragOff3 = Vector2.new(i.Position.X - Card.AbsolutePosition.X, i.Position.Y - Card.AbsolutePosition.Y)
+    end
+end)
+UserInputService.InputChanged:Connect(function(i)
+    if dragOn3 and i.UserInputType == Enum.UserInputType.MouseMovement then
+        Card.Position = U2(0, i.Position.X - dragOff3.X, 0, i.Position.Y - dragOff3.Y)
+    end
+end)
+UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then dragOn3 = false end
+end)
+
+local function spamJoin(jobId, brainrotName, valueStr, count)
+    if isJoining then
+        addLog("Already joining, queuing: " .. brainrotName)
+        table.insert(joinQueue, {jobId=jobId, name=brainrotName, valueStr=valueStr, count=count})
+        return
+    end
+    isJoining = true
+    StatusLbl.Text = "JOINING: " .. brainrotName
+    StatusLbl.TextColor3 = C3(255,200,60)
+    AlertLbl.Text = brainrotName .. "\n" .. valueStr
+    AlertLbl.TextColor3 = C3(0,220,140)
+    addLog("Starting spam join: " .. brainrotName .. " x" .. tostring(count))
+
+    task.spawn(function()
+        for i = 1, count do
+            if not running then break end
+            dismissPopups()
+            local ok = pcall(function()
+                TeleportService:TeleportToPlaceInstance(PlaceId, jobId, LP)
+            end)
+            if ok then
+                totalJoins = totalJoins + 1
+                ProgressLbl.Text = "join " .. tostring(i) .. "/" .. tostring(count) .. "  total: " .. tostring(totalJoins)
+                TweenService:Create(ProgressBar, TI(0.1), {Size = U2(i/count, 0, 1, 0)}):Play()
+                addLog("Join " .. tostring(i) .. "/" .. tostring(count) .. " -> " .. jobId:sub(1,8) .. "...")
+            else
+                addLog("Join " .. tostring(i) .. " FAILED")
+            end
+            task.wait(JOIN_COOLDOWN)
+        end
+        addLog("Done: " .. brainrotName .. " (" .. tostring(count) .. " joins)")
+        isJoining = false
+        ProgressBar.Size = U2(0,0,1,0)
+        if #joinQueue > 0 then
+            local next = table.remove(joinQueue, 1)
+            spamJoin(next.jobId, next.name, next.valueStr, next.count)
+        else
+            StatusLbl.Text = "Waiting for alerts..."
+            StatusLbl.TextColor3 = C3(80,100,140)
+        end
+    end)
+end
+
+task.spawn(function()
+    while running do
+        dismissPopups(); task.wait(0.3)
+    end
+end)
+
+task.spawn(function()
+    addLog("Joiner started. Fetching every " .. tostring(FETCH_INTERVAL) .. "s")
+    addLog("Watching channel: " .. DISCORD_CHANNEL_ID)
+
+    local firstFetch = true
+    while running do
+        local msgs = fetchDiscordMessages()
+        if firstFetch then
+            for _, msg in ipairs(msgs) do
+                seenMessageIds[msg.id] = true
+            end
+            firstFetch = false
+            addLog("Synced " .. tostring(#msgs) .. " existing messages, watching for NEW alerts.")
+        else
+            local alerts = parseNewAlerts(msgs)
+            for _, alert in ipairs(alerts) do
+                local count = getSpamCount()
+                addLog("ALERT: " .. alert.name .. " " .. alert.valueStr .. " -> spam x" .. tostring(count))
+                StatusLbl.Text = "ALERT: " .. alert.name .. " " .. alert.valueStr
+                StatusLbl.TextColor3 = C3(0,230,150)
+                spamJoin(alert.jobId, alert.name, alert.valueStr, count)
+            end
+            if #alerts == 0 then
+                addLog("Polled Discord: no new alerts.")
+            end
+        end
+        task.wait(FETCH_INTERVAL)
+    end
+end)
