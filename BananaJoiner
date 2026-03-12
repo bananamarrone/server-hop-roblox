@@ -1,11 +1,3 @@
--- BANANA JOINER v2
--- Polls Discord channel for BananaScout alerts, auto spam-joins new ones.
--- Logs button opens separate GUI: every alert row has JOIN x1 and SPAM JOIN buttons.
--- No +=, no *=, no block comments. Works on Ronix, Delta, KRNL, Synapse, Fluxus.
-
--- ============================================================
--- CONFIG
--- ============================================================
 local DISCORD_CHANNEL_ID = "1481658438780977295"
 local DISCORD_BOT_TOKEN  = "MTQ4MTY2MjE3NjMwODYyOTUxNg.Gg7VuV.Vmrk7IfQAfnz3DHujcI1p8YHLy_0jPoOy2r9xc"
 local DEFAULT_SPAM       = 50
