@@ -1,3 +1,8 @@
+-- BANANA SERVER HOP v13 (fixed: stop button now works instantly)
+-- No +=, no *=, no block comments. Works on Ronix, Delta, KRNL, Synapse, Fluxus.
+-- Instant hop: retries up to 3 servers, 8s timeout per attempt.
+-- Scan uses AnimalOverhead -> parent.parent BasePart pattern + Mutation support.
+
 local Players          = game:GetService("Players")
 local TeleportService  = game:GetService("TeleportService")
 local UserInputService = game:GetService("UserInputService")
