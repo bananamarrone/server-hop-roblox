@@ -1,8 +1,18 @@
---config
+-- BANANA SCOUT v8
+-- FIXED TIMING: waits for AnimalOverhead objects to appear before scanning.
+-- Scans for up to 12 seconds per server, gives up and hops if nothing appears.
+-- Webhook: request() / http_request() / syn.request() [executor compatible]
+-- Teleport: TeleportService:Teleport(PlaceId, player)  [confirmed working]
+-- Scan: AnimalOverhead -> Generation -> $ parser        [confirmed working]
+-- No +=  No *=
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
 local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
-local MIN_VALUE_MPS = 1e3    -- report servers with brainrots >= this (30M default)
-local WAIT_FOR_LOAD = 2       -- seconds to wait after joining for brainrots to appear
-local SCAN_TIME     = 2       -- seconds to keep scanning after first brainrot seen
+local MIN_VALUE_MPS = 30e6    -- report servers with brainrots >= this (30M default)
+local WAIT_FOR_LOAD = 6       -- seconds to wait after joining for brainrots to appear
+local SCAN_TIME     = 6       -- seconds to keep scanning after first brainrot seen
 local MIN_PLAYERS   = 3       -- skip servers with fewer players (not used for hop method)
 -- ============================================================
 
@@ -15,6 +25,42 @@ local CoreGui          = game:GetService("CoreGui")
 
 local LP      = Players.LocalPlayer
 local PlaceId = game.PlaceId
+
+-- ── MINIMUM GRAPHICS (reduce crashes on low-end devices) ─────────────────────
+pcall(function()
+    settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+end)
+pcall(function()
+    local RS = game:GetService("RunService")
+    -- disable shadows, reflections, post-processing
+    game:GetService("Lighting").GlobalShadows    = false
+    game:GetService("Lighting").FogEnd           = 9e9
+    game:GetService("Lighting").Brightness       = 0
+end)
+pcall(function()
+    -- remove all post-processing effects
+    for _,v in ipairs(game:GetService("Lighting"):GetChildren()) do
+        if v:IsA("PostEffect") or v:IsA("BloomEffect") or v:IsA("BlurEffect")
+        or v:IsA("ColorCorrectionEffect") or v:IsA("SunRaysEffect") or v:IsA("DepthOfFieldEffect") then
+            v:Destroy()
+        end
+    end
+end)
+pcall(function()
+    -- set render distance to near-minimum
+    local camera = workspace.CurrentCamera
+    if camera then camera.DiagonalFieldOfView = 1 end
+end)
+pcall(function()
+    -- force minimum quality via UserGameSettings
+    UserSettings():GetService("UserGameSettings").SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+end)
+-- disable all textures and meshes rendering detail
+pcall(function()
+    game:GetService("RunService").RenderStepped:Connect(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+end)
 
 local C3 = Color3.fromRGB
 local U2 = UDim2.new
