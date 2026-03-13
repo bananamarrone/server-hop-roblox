@@ -1,3 +1,4 @@
+-- key system config
 local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
 local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
 -- ============================================================
