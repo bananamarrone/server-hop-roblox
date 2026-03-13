@@ -1,14 +1,5 @@
--- BANANA SERVER HOP v16
--- Teleport method: TeleportService:Teleport(PlaceId, player)  [confirmed working]
--- Scan method: AnimalOverhead -> Generation -> $ parser       [confirmed working]
--- Key system, endless hop, full mobile support, no keyboard needed.
--- No +=  No *=  No block comments
-
--- ============================================================
--- CONFIG
--- ============================================================
-local KEY_PASTEBIN = "https://pastebin.com/raw/XXXXXXXX"
-local WORK_INK_URL = "https://work.ink/YOUR_LINK"
+local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
+local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
 -- ============================================================
 
 local Players          = game:GetService("Players")
