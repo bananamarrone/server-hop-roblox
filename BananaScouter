@@ -1,5 +1,8 @@
+-- ============================================================
+-- CONFIG
+-- ============================================================
 local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
-local MIN_VALUE_MPS = 1e3    -- report servers with brainrots >= this (30M)
+local MIN_VALUE_MPS = 30e6    -- report servers with brainrots >= this (30M default)
 local MIN_PLAYERS   = 3       -- skip servers with fewer players
 -- ============================================================
 
@@ -34,7 +37,6 @@ end
 local function safeWrite(f,d)
     pcall(function() if writefile then writefile(f,d) end end)
 end
-
 local St={hops=0,found=0}
 local function saveSt()
     local ok,enc=pcall(function() return HttpService:JSONEncode(St) end)
@@ -62,7 +64,7 @@ local function queueSelf()
     pcall(function() if fluxus and fluxus.queue_on_teleport then fluxus.queue_on_teleport(SCRIPT_SOURCE) end end)
 end
 
--- ── VALUE PARSER (confirmed working) ─────────────────────────────────────────
+-- ── VALUE PARSER ─────────────────────────────────────────────────────────────
 local function parseValue(t)
     if not t then return 0 end
     local n,s=t:match("%$([%d%.]+)%s*([kKmMbBtT]?)")
@@ -86,7 +88,7 @@ local function fmtVal(n)
     else return tostring(math.floor(n)) end
 end
 
--- ── SCANNER (confirmed working) ───────────────────────────────────────────────
+-- ── SCANNER ───────────────────────────────────────────────────────────────────
 local function scanBest()
     local bestVal,bestName,bestRaw=-1,"?",""
     for _,o in next,workspace:GetDescendants() do
@@ -105,34 +107,85 @@ local function scanBest()
     return bestVal,bestName,bestRaw
 end
 
--- ── WEBHOOK ───────────────────────────────────────────────────────────────────
+-- ── WEBHOOK (executor-compatible) ────────────────────────────────────────────
+-- HttpService:PostAsync does NOT work in Ronix/Delta/most executors for Discord.
+-- Must use request() or http_request() which executors provide.
 local function sendWebhook(val,name,rawText,jobId,numPlayers)
     local valStr=fmtVal(val).."/s"
     local joinCmd=string.format(
         "game:GetService('TeleportService'):TeleportToPlaceInstance(%d,'%s')",PlaceId,jobId)
+
     local payload={
         username="Banana Scout",
         embeds={{
             title="BRAINROT FOUND",
-            color=16768000,
+            color=65280,
             fields={
-                {name="Value",        value=valStr,                        inline=true},
-                {name="Players",      value=tostring(numPlayers).."/8",    inline=true},
-                {name="Name",         value=name,                          inline=false},
-                {name="Raw Text",     value=rawText,                       inline=false},
-                {name="Server ID",    value="`"..jobId.."`",               inline=false},
-                {name="Join Command", value="```lua\n"..joinCmd.."\n```",  inline=false},
+                {name="Value",        value=valStr,                       inline=true},
+                {name="Players",      value=tostring(numPlayers).."/8",   inline=true},
+                {name="Name",         value=name,                         inline=false},
+                {name="Raw Text",     value=rawText,                      inline=false},
+                {name="Server ID",    value="`"..jobId.."`",              inline=false},
+                {name="Join Command", value="```lua\n"..joinCmd.."\n```", inline=false},
             },
-            footer={text="Banana Scout  |  hops: "..St.hops.."  found: "..St.found},
+            footer={text="Banana Scout  |  hops: "..St.hops.."  |  found: "..St.found},
         }}
     }
-    local ok,enc=pcall(function() return HttpService:JSONEncode(payload) end)
-    if not ok then log("Encode fail"); return end
-    local ok2,err=pcall(function()
-        HttpService:PostAsync(WEBHOOK_URL,enc,Enum.HttpContentType.ApplicationJson)
+
+    local ok,body=pcall(function() return HttpService:JSONEncode(payload) end)
+    if not ok then log("JSON encode failed: "..tostring(body)); return end
+
+    -- try request() first (Ronix, Delta, KRNL, most executors)
+    local sent=false
+    pcall(function()
+        if request then
+            local res=request({
+                Url=WEBHOOK_URL,
+                Method="POST",
+                Headers={["Content-Type"]="application/json"},
+                Body=body,
+            })
+            sent=true
+            log("Webhook sent via request(): status "..tostring(res and res.StatusCode))
+        end
     end)
-    if ok2 then log("Webhook sent: "..valStr)
-    else log("Webhook error: "..tostring(err)) end
+
+    -- fallback: http_request() (some older executors)
+    if not sent then
+        pcall(function()
+            if http_request then
+                local res=http_request({
+                    Url=WEBHOOK_URL,
+                    Method="POST",
+                    Headers={["Content-Type"]="application/json"},
+                    Body=body,
+                })
+                sent=true
+                log("Webhook sent via http_request(): status "..tostring(res and res.StatusCode))
+            end
+        end)
+    end
+
+    -- fallback: syn.request (Synapse)
+    if not sent then
+        pcall(function()
+            if syn and syn.request then
+                syn.request({
+                    Url=WEBHOOK_URL,
+                    Method="POST",
+                    Headers={["Content-Type"]="application/json"},
+                    Body=body,
+                })
+                sent=true
+                log("Webhook sent via syn.request()")
+            end
+        end)
+    end
+
+    if not sent then
+        log("All webhook methods failed - no request() available in this executor")
+        warn("[SCOUT] Webhook could not be sent: executor has no request() function")
+    end
 end
 
 -- ── GUI ───────────────────────────────────────────────────────────────────────
@@ -145,7 +198,7 @@ Gui.Name="BSH_Scout"; Gui.DisplayOrder=100
 Gui.ResetOnSpawn=false; Gui.IgnoreGuiInset=true; Gui.Parent=CoreGui
 
 local Card=Instance.new("Frame",Gui)
-Card.Size=U2(0,260,0,112); Card.Position=U2(0,10,0,10)
+Card.Size=U2(0,260,0,140); Card.Position=U2(0,10,0,10)
 Card.BackgroundColor3=C3(7,9,14); Card.BorderSizePixel=0; Card.Active=true
 Instance.new("UICorner",Card).CornerRadius=UDim.new(0,10)
 Instance.new("UIStroke",Card).Color=C3(0,160,100)
@@ -153,9 +206,7 @@ Instance.new("UIStroke",Card).Color=C3(0,160,100)
 local Acc=Instance.new("Frame",Card)
 Acc.Size=U2(1,0,0,2); Acc.BackgroundColor3=C3(0,220,120); Acc.BorderSizePixel=0
 Instance.new("UIGradient",Acc).Color=ColorSequence.new({
-    ColorSequenceKeypoint.new(0,C3(0,200,255)),
-    ColorSequenceKeypoint.new(1,C3(0,255,160))
-})
+    ColorSequenceKeypoint.new(0,C3(0,200,255)),ColorSequenceKeypoint.new(1,C3(0,255,160))})
 
 local TTL=Instance.new("TextLabel",Card)
 TTL.Size=U2(1,-10,0,18); TTL.Position=U2(0,8,0,6)
@@ -167,20 +218,33 @@ local STL=Instance.new("TextLabel",Card)
 STL.Size=U2(1,-10,0,14); STL.Position=U2(0,8,0,27)
 STL.BackgroundTransparency=1; STL.Font=Enum.Font.Gotham; STL.TextSize=10
 STL.Text="Starting..."; STL.TextColor3=C3(100,130,170)
-STL.TextXAlignment=Enum.TextXAlignment.Left
+STL.TextXAlignment=Enum.TextXAlignment.Left; STL.TextWrapped=true
+
+local BestL=Instance.new("TextLabel",Card)
+BestL.Size=U2(1,-10,0,14); BestL.Position=U2(0,8,0,43)
+BestL.BackgroundTransparency=1; BestL.Font=Enum.Font.Gotham; BestL.TextSize=9
+BestL.Text="best: —"; BestL.TextColor3=C3(55,85,125)
+BestL.TextXAlignment=Enum.TextXAlignment.Left; BestL.TextWrapped=true
 
 local SPL=Instance.new("TextLabel",Card)
-SPL.Size=U2(1,-10,0,12); SPL.Position=U2(0,8,0,43)
+SPL.Size=U2(1,-10,0,12); SPL.Position=U2(0,8,0,59)
 SPL.BackgroundTransparency=1; SPL.Font=Enum.Font.Gotham; SPL.TextSize=9
-SPL.Text="pool: 0  |  hops: 0  |  found: 0"
-SPL.TextColor3=C3(50,70,100); SPL.TextXAlignment=Enum.TextXAlignment.Left
+SPL.Text="hops: 0  |  found: 0"; SPL.TextColor3=C3(50,70,100)
+SPL.TextXAlignment=Enum.TextXAlignment.Left
 
 local StopB=Instance.new("TextButton",Card)
-StopB.Size=U2(1,-16,0,28); StopB.Position=U2(0,8,0,60)
+StopB.Size=U2(1,-16,0,28); StopB.Position=U2(0,8,0,78)
 StopB.BackgroundColor3=C3(50,14,14); StopB.BorderSizePixel=0
 StopB.Font=Enum.Font.GothamBold; StopB.TextSize=11
 StopB.Text="STOP SCOUT"; StopB.TextColor3=C3(220,70,70); StopB.AutoButtonColor=false
 Instance.new("UICorner",StopB).CornerRadius=UDim.new(0,5)
+
+-- MIN VALUE changer
+local MLbl=Instance.new("TextLabel",Card)
+MLbl.Size=U2(1,-10,0,12); MLbl.Position=U2(0,8,0,112)
+MLbl.BackgroundTransparency=1; MLbl.Font=Enum.Font.Gotham; MLbl.TextSize=9
+MLbl.Text="Min value: "..fmtVal(MIN_VALUE_MPS).."/s  (edit in CONFIG)"; MLbl.TextColor3=C3(40,60,90)
+MLbl.TextXAlignment=Enum.TextXAlignment.Left
 
 local running=true
 StopB.MouseButton1Click:Connect(function()
@@ -194,8 +258,7 @@ local dOn=false; local dOff=Vector2.new()
 Card.InputBegan:Connect(function(i)
     if i.UserInputType==Enum.UserInputType.MouseButton1
     or i.UserInputType==Enum.UserInputType.Touch then
-        dOn=true
-        dOff=Vector2.new(i.Position.X-Card.AbsolutePosition.X,i.Position.Y-Card.AbsolutePosition.Y)
+        dOn=true; dOff=Vector2.new(i.Position.X-Card.AbsolutePosition.X,i.Position.Y-Card.AbsolutePosition.Y)
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
@@ -209,7 +272,6 @@ UserInputService.InputEnded:Connect(function(i)
     or i.UserInputType==Enum.UserInputType.Touch then dOn=false end
 end)
 
--- stats ticker
 task.spawn(function()
     while running do
         SPL.Text="hops: "..St.hops.."  |  found: "..St.found
@@ -218,12 +280,12 @@ task.spawn(function()
 end)
 
 -- ── MAIN LOOP ─────────────────────────────────────────────────────────────────
-log("Started. Min: "..fmtVal(MIN_VALUE_MPS).."/s")
+log("Started. Min: "..fmtVal(MIN_VALUE_MPS).."/s  Webhook: set")
 
 task.spawn(function()
     while running do
-        -- scan 3 passes like the working Brainrot Hunter script
         STL.Text="SCANNING..."; STL.TextColor3=C3(60,130,90)
+
         local bestVal,bestName,bestRaw=-1,"?",""
         for _=1,3 do
             if not running then break end
@@ -233,13 +295,13 @@ task.spawn(function()
         end
 
         if bestVal>0 then
-            STL.Text="Found: "..fmtVal(bestVal).."/s  "..bestName
-            STL.TextColor3=C3(0,200,130)
-            log("Best: "..fmtVal(bestVal).."/s  "..bestName.."  raw="..bestRaw)
+            STL.Text="Found: "..fmtVal(bestVal).."/s"; STL.TextColor3=C3(0,200,130)
+            BestL.Text=bestName.."  "..bestRaw; BestL.TextColor3=C3(55,85,125)
+            log("Best: "..fmtVal(bestVal).."/s  "..bestName)
         else
-            STL.Text="Nothing found here"
-            STL.TextColor3=C3(55,75,110)
-            log("No AnimalOverhead found.")
+            STL.Text="Nothing found"; STL.TextColor3=C3(55,75,110)
+            BestL.Text="best: —"; BestL.TextColor3=C3(38,55,82)
+            log("No AnimalOverhead found this server.")
         end
 
         if not running then break end
@@ -248,28 +310,22 @@ task.spawn(function()
             St.found=St.found+1; saveSt()
             local jobId=game.JobId
             local numPlayers=#Players:GetPlayers()
-            STL.Text="REPORTED: "..fmtVal(bestVal).."/s"; STL.TextColor3=C3(0,255,140)
-            log("REPORTING: "..fmtVal(bestVal).."/s  server: "..jobId)
-            notify("Scout Found!",fmtVal(bestVal).."/s reported to Discord.")
+            STL.Text="SENDING WEBHOOK..."; STL.TextColor3=C3(255,200,50)
+            log("Sending webhook: "..fmtVal(bestVal).."/s  server: "..jobId)
             sendWebhook(bestVal,bestName,bestRaw,jobId,numPlayers)
+            STL.Text="REPORTED: "..fmtVal(bestVal).."/s"; STL.TextColor3=C3(0,255,140)
+            notify("Scout Found!",fmtVal(bestVal).."/s reported to Discord.")
             local tw=tick()
             while running and tick()-tw<8 do task.wait(0.1) end
-        else
-            if bestVal>0 then
-                log("Too low: "..fmtVal(bestVal).."/s  need "..fmtVal(MIN_VALUE_MPS))
-            end
         end
 
         if not running then break end
 
-        -- hop using confirmed working method
         St.hops=St.hops+1; saveSt()
         STL.Text="Hopping... #"..St.hops; STL.TextColor3=C3(80,100,160)
         log("Hop #"..St.hops)
         queueSelf()
-        pcall(function()
-            TeleportService:Teleport(PlaceId, LP)
-        end)
+        pcall(function() TeleportService:Teleport(PlaceId,LP) end)
         local t0=tick()
         while running and tick()-t0<8 do task.wait(0.1) end
     end
