@@ -1,4 +1,6 @@
+-- ============================================================
 -- CONFIG
+-- ============================================================
 local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
 local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
 local SETTINGS_FILE = "BSH_settings.json"   -- saved in executor workspace folder
@@ -608,12 +610,30 @@ local function startHunt()
     log("Hunt started. Target: $"..fmtVal(targetValue))
     task.spawn(function()
         while hunting do
+            -- wait up to 8s for at least one AnimalOverhead to exist (game may not have loaded yet)
+            local t0=tick()
+            while hunting and tick()-t0<8 do
+                local found=false
+                for _,o in next,workspace:GetDescendants() do
+                    if o.Name=="AnimalOverhead" then found=true; break end
+                end
+                if found then break end
+                setStatus("Waiting for game to load... ("..string.format("%.0f",8-(tick()-t0)).."s)",60,90,140)
+                setBar((tick()-t0)/8)
+                task.wait(0.2)
+            end
+            if not hunting then break end
+
+            -- scan in a rolling window: keep scanning every 0.15s, stop when bestVal
+            -- hasn't improved for 1.5s (game has settled) or 6s total have passed
             local bestVal,bestName,bestRaw=-1,"?",""
-            for att=1,3 do
-                if not hunting then break end
+            local lastImprove=tick()
+            local scanStart=tick()
+            while hunting and tick()-scanStart<6 do
                 local v,n,r=scanBest()
-                if v>bestVal then bestVal=v; bestName=n; bestRaw=r end
-                setBar(att/3)
+                if v>bestVal then bestVal=v; bestName=n; bestRaw=r; lastImprove=tick() end
+                local elapsed=tick()-scanStart
+                setBar(math.clamp(elapsed/6,0,1))
                 if bestVal>0 then
                     setStatus("SCANNING  $"..fmtVal(bestVal),0,170,110)
                     BestL.Text="best: "..bestName.."  "..bestRaw
@@ -621,7 +641,9 @@ local function startHunt()
                 else
                     setStatus("SCANNING...",0,120,80)
                 end
-                task.wait(0.04)
+                -- if value hasn't changed in 1.5s and we've been scanning at least 1s, settle early
+                if bestVal>0 and tick()-lastImprove>1.5 and elapsed>1 then break end
+                task.wait(0.15)
             end
             if not hunting then break end
             if bestVal>=targetValue and isWanted(bestName) then
