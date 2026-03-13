@@ -1,3 +1,13 @@
+-- BANANA SERVER HOP v18
+-- Settings saved to workspace folder so they persist between hops.
+-- Teleport: TeleportService:Teleport(PlaceId, player)  [confirmed working]
+-- Scan:     AnimalOverhead -> Generation -> $ parser    [confirmed working]
+-- Key system, blacklist, whitelist, force hop, full mobile support.
+-- No +=  No *=  No block comments
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
 local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
 local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
 local SETTINGS_FILE = "BSH_settings.json"   -- saved in executor workspace folder
@@ -33,9 +43,9 @@ local function notify(title, text)
 end
 
 -- ── FILE I/O ──────────────────────────────────────────────────────────────────
-local _isfile   = isfile   or (typeof(isfile)=="function"   and isfile)   or nil
-local _readfile  = readfile  or (typeof(readfile)=="function"  and readfile)  or nil
-local _writefile = writefile or (typeof(writefile)=="function" and writefile) or nil
+local _isfile   = rawget(_G,"isfile")
+local _readfile  = rawget(_G,"readfile")
+local _writefile = rawget(_G,"writefile")
 
 local function safeRead(f)
     if not _isfile or not _readfile then return nil end
@@ -173,8 +183,8 @@ pcall(function()
 end)
 local function queueSelf()
     if not SCRIPT_SOURCE then return end
-    pcall(function() if queue_on_teleport then queue_on_teleport(SCRIPT_SOURCE) end end)
-    pcall(function() if syn and syn.queue_on_teleport then syn.queue_on_teleport(SCRIPT_SOURCE) end end)
+    pcall(function() local _qot=rawget(_G,"queue_on_teleport"); if _qot then _qot(SCRIPT_SOURCE) end end)
+    pcall(function() local _sqot=rawget(_G,"syn"); if _sqot and _sqot.queue_on_teleport then _sqot.queue_on_teleport(SCRIPT_SOURCE) end end)
     pcall(function() if fluxus and fluxus.queue_on_teleport then fluxus.queue_on_teleport(SCRIPT_SOURCE) end end)
 end
 
