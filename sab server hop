@@ -185,13 +185,49 @@ end
 -- ── HOP ───────────────────────────────────────────────────────────────────────
 local hunting=false
 local hopCount=0
+
+-- fetch a random server job ID that is NOT the current server
+local function getRandomJobId()
+    local curJob=game.JobId
+    -- grab up to 3 pages of servers, pick a random one that isn't current
+    local ids={}
+    local cursor=""
+    for _=1,3 do
+        local url="https://games.roblox.com/v1/games/"..PlaceId.."/servers/Public?sortOrder=Random&excludeFullGames=false&limit=100"
+        if cursor~="" then url=url.."&cursor="..cursor end
+        local ok,res=pcall(function() return game:HttpGet(url) end)
+        if not ok or not res then break end
+        local dok,data=pcall(function() return HttpService:JSONDecode(res) end)
+        if not dok or type(data)~="table" or not data.data then break end
+        for _,srv in ipairs(data.data) do
+            if type(srv.id)=="string" and srv.id~=curJob then
+                table.insert(ids,srv.id)
+            end
+        end
+        cursor=(type(data.nextPageCursor)=="string") and data.nextPageCursor or ""
+        if cursor=="" or #ids>=20 then break end
+        task.wait(0.05)
+    end
+    if #ids==0 then return nil end
+    return ids[math.random(1,#ids)]
+end
+
 local function doHop()
     hopCount=hopCount+1
     queueSelf()
-    log("Hop #"..hopCount)
-    pcall(function() TeleportService:Teleport(PlaceId,LP) end)
+    log("Hop #"..hopCount.." | fetching server list...")
+    local jobId=getRandomJobId()
+    if jobId then
+        log("Teleporting to job "..jobId:sub(1,16).."...")
+        pcall(function() TeleportService:TeleportToPlaceInstance(PlaceId,jobId,LP) end)
+    else
+        -- fallback: no server list available, use random
+        log("No server list, falling back to random Teleport()")
+        pcall(function() TeleportService:Teleport(PlaceId,LP) end)
+    end
     local t0=tick()
     while hunting and tick()-t0<6 do task.wait(0.1) end
+end
 end
 
 -- ═══════════════════════════════════════════════════════════════════════
