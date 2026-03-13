@@ -241,7 +241,6 @@ local function doHop()
     local t0=tick()
     while hunting and tick()-t0<6 do task.wait(0.1) end
 end
-end
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- GUI
