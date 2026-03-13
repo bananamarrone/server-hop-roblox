@@ -1,28 +1,34 @@
+-- CONFIG
+-- ============================================================
 local DISCORD_CHANNEL_ID = "1481658438780977295"
 local DISCORD_BOT_TOKEN  = "MTQ4MTY2MjE3NjMwODYyOTUxNg.Gg7VuV.Vmrk7IfQAfnz3DHujcI1p8YHLy_0jPoOy2r9xc"
 local DEFAULT_SPAM       = 50
-local JOIN_COOLDOWN      = 0.4
-local FETCH_INTERVAL     = 15
+local JOIN_COOLDOWN      = 0.1
+local FETCH_INTERVAL     = 1   -- seconds between Discord polls
 -- ============================================================
 -- Discord Bot setup:
 -- discord.com/developers > New App > Bot > Reset Token > copy token above.
--- Invite bot to your server with Read Message History + View Channels perms.
+-- Invite bot with Read Message History + View Channels permissions.
 -- ============================================================
 
-local Players         = game:GetService("Players")
-local TeleportService = game:GetService("TeleportService")
-local HttpService     = game:GetService("HttpService")
-local UserInputService= game:GetService("UserInputService")
-local TweenService    = game:GetService("TweenService")
-local CoreGui         = game:GetService("CoreGui")
+local Players          = game:GetService("Players")
+local TeleportService  = game:GetService("TeleportService")
+local HttpService      = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
+local CoreGui          = game:GetService("CoreGui")
 
 local LP      = Players.LocalPlayer
 local PlaceId = game.PlaceId
 
-local C3=Color3.fromRGB; local U2=UDim2.new; local TI=TweenInfo.new
+local C3 = Color3.fromRGB
+local U2 = UDim2.new
+local TI = TweenInfo.new
 
 for _,v in ipairs(CoreGui:GetChildren()) do
-    if type(v.Name)=="string" and (v.Name=="BSH_Joiner" or v.Name=="BSH_JoinerLogs") then v:Destroy() end
+    if type(v.Name)=="string" and (v.Name=="BSH_Joiner" or v.Name=="BSH_JoinerLogs") then
+        v:Destroy()
+    end
 end
 
 local function dismissPopups()
@@ -30,7 +36,9 @@ local function dismissPopups()
         for _,obj in ipairs(CoreGui:GetDescendants()) do
             if obj:IsA("TextButton") then
                 local t=obj.Text:lower()
-                if t=="ok" or t=="okay" or t=="leave" then pcall(function() obj.MouseButton1Click:Fire() end) end
+                if t=="ok" or t=="okay" or t=="leave" then
+                    pcall(function() obj.MouseButton1Click:Fire() end)
+                end
             end
         end
     end)
@@ -53,18 +61,19 @@ end
 local MainGui=Instance.new("ScreenGui"); MainGui.Name="BSH_Joiner"; MainGui.DisplayOrder=200
 MainGui.ResetOnSpawn=false; MainGui.IgnoreGuiInset=true; MainGui.Parent=CoreGui
 
-local MainCard=Instance.new("Frame",MainGui); MainCard.Size=U2(0,290,0,260); MainCard.Position=U2(0,10,0,10)
+local MainCard=Instance.new("Frame",MainGui); MainCard.Size=U2(0,290,0,300); MainCard.Position=U2(0,10,0,10)
 MainCard.BackgroundColor3=C3(7,9,14); MainCard.BorderSizePixel=0; MainCard.Active=true
 Instance.new("UICorner",MainCard).CornerRadius=UDim.new(0,12)
 Instance.new("UIStroke",MainCard).Color=C3(22,34,55)
 
 local MAccB=Instance.new("Frame",MainCard); MAccB.Size=U2(1,0,0,2); MAccB.BackgroundColor3=C3(255,160,30); MAccB.BorderSizePixel=0
-Instance.new("UIGradient",MAccB).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,210,50))})
+Instance.new("UIGradient",MAccB).Color=ColorSequence.new({
+    ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,210,50))})
 
 local MHeader=Instance.new("Frame",MainCard); MHeader.Size=U2(1,0,0,38); MHeader.Position=U2(0,0,0,2); MHeader.BackgroundTransparency=1
 local MTL=Instance.new("TextLabel",MHeader); MTL.Size=U2(1,-10,1,0); MTL.Position=U2(0,10,0,0)
 MTL.BackgroundTransparency=1; MTL.Font=Enum.Font.GothamBold; MTL.TextSize=12
-MTL.Text="BANANA JOINER"; MTL.TextColor3=C3(255,200,80); MTL.TextXAlignment=Enum.TextXAlignment.Left
+MTL.Text="BANANA JOINER v3"; MTL.TextColor3=C3(255,200,80); MTL.TextXAlignment=Enum.TextXAlignment.Left
 
 local function mkDiv3(y)
     local d=Instance.new("Frame",MainCard); d.Size=U2(1,-20,0,1); d.Position=U2(0,10,0,y)
@@ -74,7 +83,7 @@ mkDiv3(42)
 
 local SL=Instance.new("TextLabel",MainCard); SL.Size=U2(1,-20,0,16); SL.Position=U2(0,10,0,48)
 SL.BackgroundTransparency=1; SL.Font=Enum.Font.GothamBold; SL.TextSize=11
-SL.Text="Waiting for alerts..."; SL.TextColor3=C3(80,100,140); SL.TextXAlignment=Enum.TextXAlignment.Left
+SL.Text="Connecting to Discord..."; SL.TextColor3=C3(80,100,140); SL.TextXAlignment=Enum.TextXAlignment.Left
 
 local AL=Instance.new("TextLabel",MainCard); AL.Size=U2(1,-20,0,26); AL.Position=U2(0,10,0,66)
 AL.BackgroundTransparency=1; AL.Font=Enum.Font.Gotham; AL.TextSize=10
@@ -99,43 +108,60 @@ mkDiv3(148)
 
 local ProgLbl=Instance.new("TextLabel",MainCard); ProgLbl.Size=U2(1,-20,0,13); ProgLbl.Position=U2(0,10,0,154)
 ProgLbl.BackgroundTransparency=1; ProgLbl.Font=Enum.Font.Gotham; ProgLbl.TextSize=9
-ProgLbl.Text="joins: 0  queue: 0"; ProgLbl.TextColor3=C3(50,70,110); ProgLbl.TextXAlignment=Enum.TextXAlignment.Left
+ProgLbl.Text="joins: 0  |  queue: 0"; ProgLbl.TextColor3=C3(50,70,110); ProgLbl.TextXAlignment=Enum.TextXAlignment.Left
 
-local PBG=Instance.new("Frame",MainCard); PBG.Size=U2(1,-20,0,4); PBG.Position=U2(0,10,0,169)
+local DBGLbl=Instance.new("TextLabel",MainCard); DBGLbl.Size=U2(1,-20,0,13); DBGLbl.Position=U2(0,10,0,168)
+DBGLbl.BackgroundTransparency=1; DBGLbl.Font=Enum.Font.Gotham; DBGLbl.TextSize=9
+DBGLbl.Text="last fetch: never"; DBGLbl.TextColor3=C3(80,110,160); DBGLbl.TextXAlignment=Enum.TextXAlignment.Left
+
+local PBG=Instance.new("Frame",MainCard); PBG.Size=U2(1,-20,0,4); PBG.Position=U2(0,10,0,183)
 PBG.BackgroundColor3=C3(14,22,36); PBG.BorderSizePixel=0; Instance.new("UICorner",PBG).CornerRadius=UDim.new(1,0)
 local PBar=Instance.new("Frame",PBG); PBar.Size=U2(0,0,1,0); PBar.BackgroundColor3=C3(255,160,30); PBar.BorderSizePixel=0
 Instance.new("UICorner",PBar).CornerRadius=UDim.new(1,0)
-Instance.new("UIGradient",PBar).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,220,60))})
+Instance.new("UIGradient",PBar).Color=ColorSequence.new({
+    ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,220,60))})
 
-mkDiv3(177)
+mkDiv3(191)
 
-local LogsBtn=Instance.new("TextButton",MainCard); LogsBtn.Size=U2(1,-20,0,30); LogsBtn.Position=U2(0,10,0,184)
+-- FETCH NOW button — tap to test immediately without waiting for interval
+local FetchNowBtn=Instance.new("TextButton",MainCard); FetchNowBtn.Size=U2(1,-20,0,26); FetchNowBtn.Position=U2(0,10,0,198)
+FetchNowBtn.BackgroundColor3=C3(14,30,14); FetchNowBtn.BorderSizePixel=0; FetchNowBtn.Font=Enum.Font.GothamBold
+FetchNowBtn.TextSize=10; FetchNowBtn.Text="FETCH NOW  (test)"; FetchNowBtn.TextColor3=C3(80,220,120); FetchNowBtn.AutoButtonColor=false
+Instance.new("UICorner",FetchNowBtn).CornerRadius=UDim.new(0,7); Instance.new("UIStroke",FetchNowBtn).Color=C3(30,80,30)
+
+mkDiv3(228)
+
+local LogsBtn=Instance.new("TextButton",MainCard); LogsBtn.Size=U2(1,-20,0,30); LogsBtn.Position=U2(0,10,0,234)
 LogsBtn.BackgroundColor3=C3(18,28,48); LogsBtn.BorderSizePixel=0; LogsBtn.Font=Enum.Font.GothamBold
 LogsBtn.TextSize=11; LogsBtn.Text="VIEW ALERT LOGS"; LogsBtn.TextColor3=C3(120,170,255); LogsBtn.AutoButtonColor=false
 Instance.new("UICorner",LogsBtn).CornerRadius=UDim.new(0,7); Instance.new("UIStroke",LogsBtn).Color=C3(40,70,130)
 
-mkDiv3(218)
+mkDiv3(268)
 
-local StopJoiner=Instance.new("TextButton",MainCard); StopJoiner.Size=U2(1,-20,0,18); StopJoiner.Position=U2(0,10,0,226)
+local StopJoiner=Instance.new("TextButton",MainCard); StopJoiner.Size=U2(1,-20,0,18); StopJoiner.Position=U2(0,10,0,276)
 StopJoiner.BackgroundTransparency=1; StopJoiner.BorderSizePixel=0; StopJoiner.Font=Enum.Font.Gotham
 StopJoiner.TextSize=9; StopJoiner.Text="STOP JOINER"; StopJoiner.TextColor3=C3(140,45,45); StopJoiner.AutoButtonColor=false
 StopJoiner.MouseButton1Click:Connect(function()
     running=false; SL.Text="JOINER STOPPED"; SL.TextColor3=C3(180,50,50)
 end)
 
+-- drag (touch + mouse)
 local dOn=false; local dOff=Vector2.new()
 MHeader.InputBegan:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 then
+    if i.UserInputType==Enum.UserInputType.MouseButton1
+    or i.UserInputType==Enum.UserInputType.Touch then
         dOn=true; dOff=Vector2.new(i.Position.X-MainCard.AbsolutePosition.X,i.Position.Y-MainCard.AbsolutePosition.Y)
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
-    if dOn and i.UserInputType==Enum.UserInputType.MouseMovement then
+    if dOn and (i.UserInputType==Enum.UserInputType.MouseMovement
+    or i.UserInputType==Enum.UserInputType.Touch) then
         MainCard.Position=U2(0,i.Position.X-dOff.X,0,i.Position.Y-dOff.Y)
     end
 end)
 UserInputService.InputEnded:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 then dOn=false end
+    if i.UserInputType==Enum.UserInputType.MouseButton1
+    or i.UserInputType==Enum.UserInputType.Touch then dOn=false end
 end)
 
 -- ── LOG GUI ───────────────────────────────────────────────────────────────────
@@ -148,7 +174,8 @@ Instance.new("UICorner",LogCard).CornerRadius=UDim.new(0,14)
 Instance.new("UIStroke",LogCard).Color=C3(22,34,55)
 
 local LAccB=Instance.new("Frame",LogCard); LAccB.Size=U2(1,0,0,2); LAccB.BackgroundColor3=C3(255,160,30); LAccB.BorderSizePixel=0
-Instance.new("UIGradient",LAccB).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,210,50))})
+Instance.new("UIGradient",LAccB).Color=ColorSequence.new({
+    ColorSequenceKeypoint.new(0,C3(255,120,0)),ColorSequenceKeypoint.new(1,C3(255,210,50))})
 
 local LHdr=Instance.new("Frame",LogCard); LHdr.Size=U2(1,0,0,40); LHdr.Position=U2(0,0,0,2); LHdr.BackgroundTransparency=1
 local LHTL=Instance.new("TextLabel",LHdr); LHTL.Size=U2(1,-50,1,0); LHTL.Position=U2(0,14,0,0)
@@ -163,7 +190,8 @@ LClose.MouseButton1Click:Connect(function() LogGui.Enabled=false end)
 
 local LSubLbl=Instance.new("TextLabel",LogCard); LSubLbl.Size=U2(1,-20,0,14); LSubLbl.Position=U2(0,10,0,44)
 LSubLbl.BackgroundTransparency=1; LSubLbl.Font=Enum.Font.Gotham; LSubLbl.TextSize=9
-LSubLbl.Text="JOIN x1 = join once. SPAM JOIN = join spam count times. Auto-joins on new alerts."; LSubLbl.TextColor3=C3(55,75,110); LSubLbl.TextXAlignment=Enum.TextXAlignment.Left; LSubLbl.TextWrapped=true
+LSubLbl.Text="JOIN x1 = join once.  SPAM JOIN = join spam count times.  Auto-joins on new alerts."
+LSubLbl.TextColor3=C3(55,75,110); LSubLbl.TextXAlignment=Enum.TextXAlignment.Left; LSubLbl.TextWrapped=true
 
 local LogScroll=Instance.new("ScrollingFrame",LogCard); LogScroll.Size=U2(1,-20,0,404); LogScroll.Position=U2(0,10,0,62)
 LogScroll.BackgroundColor3=C3(9,12,20); LogScroll.BorderSizePixel=0
@@ -173,17 +201,20 @@ local LL=Instance.new("UIListLayout",LogScroll); LL.Padding=UDim.new(0,4); LL.So
 
 local ldOn=false; local ldOff=Vector2.new()
 LHdr.InputBegan:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 then
+    if i.UserInputType==Enum.UserInputType.MouseButton1
+    or i.UserInputType==Enum.UserInputType.Touch then
         ldOn=true; ldOff=Vector2.new(i.Position.X-LogCard.AbsolutePosition.X,i.Position.Y-LogCard.AbsolutePosition.Y)
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
-    if ldOn and i.UserInputType==Enum.UserInputType.MouseMovement then
+    if ldOn and (i.UserInputType==Enum.UserInputType.MouseMovement
+    or i.UserInputType==Enum.UserInputType.Touch) then
         LogCard.Position=U2(0,i.Position.X-ldOff.X,0,i.Position.Y-ldOff.Y)
     end
 end)
 UserInputService.InputEnded:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 then ldOn=false end
+    if i.UserInputType==Enum.UserInputType.MouseButton1
+    or i.UserInputType==Enum.UserInputType.Touch then ldOn=false end
 end)
 
 LogsBtn.MouseButton1Click:Connect(function() LogGui.Enabled=not LogGui.Enabled end)
@@ -191,7 +222,7 @@ LogsBtn.MouseButton1Click:Connect(function() LogGui.Enabled=not LogGui.Enabled e
 -- ── JOIN LOGIC ────────────────────────────────────────────────────────────────
 local function doJoin(jobId, n)
     if isJoining then
-        table.insert(joinQueue, {jobId=jobId, n=n}); return
+        table.insert(joinQueue,{jobId=jobId,n=n}); return
     end
     isJoining=true
     task.spawn(function()
@@ -206,18 +237,17 @@ local function doJoin(jobId, n)
         end
         isJoining=false
         PBar.Size=U2(0,0,1,0)
-        ProgLbl.Text="total joins: "..tostring(totalJoins).."  queue: "..tostring(#joinQueue)
+        ProgLbl.Text="joins: "..tostring(totalJoins).."  |  queue: "..tostring(#joinQueue)
         if #joinQueue>0 then
             local nxt=table.remove(joinQueue,1); doJoin(nxt.jobId,nxt.n)
         else
-            SL.Text="Done joining. Watching..."; SL.TextColor3=C3(80,100,140)
+            SL.Text="Done. Watching for alerts..."; SL.TextColor3=C3(80,100,140)
         end
     end)
 end
 
 -- ── LOG ROW ───────────────────────────────────────────────────────────────────
 local logRowOrder=0
-
 local function addLogRow(entry)
     logRowOrder=logRowOrder+1
     local rowH=72
@@ -236,13 +266,13 @@ local function addLogRow(entry)
 
     local vl=Instance.new("TextLabel",row); vl.Size=U2(1,-10,0,14); vl.Position=U2(0,10,0,27)
     vl.BackgroundTransparency=1; vl.Font=Enum.Font.GothamBold; vl.TextSize=10
-    local mutTxt=entry.mut~="" and ("  |  "..entry.mut) or ""
-    vl.Text="$"..entry.valStr.."/s"..mutTxt.."  |  "..tostring(entry.players).." players"
+    vl.Text=entry.valStr.."  |  "..tostring(entry.players).." players"
     vl.TextColor3=C3(0,200,130); vl.TextXAlignment=Enum.TextXAlignment.Left
 
     local tl=Instance.new("TextLabel",row); tl.Size=U2(1,-10,0,12); tl.Position=U2(0,10,0,43)
     tl.BackgroundTransparency=1; tl.Font=Enum.Font.Gotham; tl.TextSize=9
-    tl.Text=entry.timeStr.."  |  "..entry.jobId:sub(1,18).."..."; tl.TextColor3=C3(45,65,95); tl.TextXAlignment=Enum.TextXAlignment.Left
+    tl.Text=entry.timeStr.."  |  "..entry.jobId:sub(1,18).."..."; tl.TextColor3=C3(45,65,95)
+    tl.TextXAlignment=Enum.TextXAlignment.Left
 
     local j1=Instance.new("TextButton",row); j1.Size=U2(0,68,0,22); j1.Position=U2(1,-158,0.5,-11)
     j1.BackgroundColor3=C3(20,60,30); j1.BorderSizePixel=0; j1.Font=Enum.Font.GothamBold
@@ -250,7 +280,7 @@ local function addLogRow(entry)
     Instance.new("UICorner",j1).CornerRadius=UDim.new(0,6)
     j1.MouseButton1Click:Connect(function()
         SL.Text="Joining: "..entry.name; SL.TextColor3=C3(80,220,120)
-        AL.Text=entry.name.."  $"..entry.valStr.."/s"; AL.TextColor3=C3(0,220,140)
+        AL.Text=entry.name.."  "..entry.valStr; AL.TextColor3=C3(0,220,140)
         doJoin(entry.jobId,1)
     end)
 
@@ -261,7 +291,7 @@ local function addLogRow(entry)
     js.MouseButton1Click:Connect(function()
         local cnt=getSpamCount(SpInput)
         SL.Text="Spam joining: "..entry.name.." x"..tostring(cnt); SL.TextColor3=C3(255,190,60)
-        AL.Text=entry.name.."  $"..entry.valStr.."/s"; AL.TextColor3=C3(255,200,80)
+        AL.Text=entry.name.."  "..entry.valStr; AL.TextColor3=C3(255,200,80)
         doJoin(entry.jobId,cnt)
     end)
 
@@ -270,18 +300,82 @@ local function addLogRow(entry)
     LogScroll.CanvasPosition=Vector2.new(0,math.max(0,count*(rowH+4)-404))
 end
 
--- ── DISCORD FETCH ─────────────────────────────────────────────────────────────
+-- ── DISCORD FETCH (executor-compatible: request / http_request / syn.request) ─
 local function fetchMsgs()
-    local url="https://discord.com/api/v10/channels/"..DISCORD_CHANNEL_ID.."/messages?limit=10"
-    local headers={Authorization="Bot "..DISCORD_BOT_TOKEN}
-    local ok,res=pcall(function() return HttpService:GetAsync(url,false,headers) end)
-    if not ok or not res then return {} end
-    local dok,msgs=pcall(function() return HttpService:JSONDecode(res) end)
-    if not dok or type(msgs)~="table" then return {} end
+    local url="https://discord.com/api/v10/channels/"..DISCORD_CHANNEL_ID.."/messages?limit=20"
+    local headers={["Authorization"]="Bot "..DISCORD_BOT_TOKEN, ["Content-Type"]="application/json"}
+    local body=nil
+    local ok=false
+
+    -- try request() first (Ronix, Delta, KRNL, most executors)
+    if not ok then
+        pcall(function()
+            if request then
+                local res=request({Url=url, Method="GET", Headers=headers})
+                if res and res.Body then body=res.Body; ok=true
+                    DBGLbl.Text="fetch OK via request()  status="..tostring(res.StatusCode)
+                end
+            end
+        end)
+    end
+
+    -- fallback: http_request()
+    if not ok then
+        pcall(function()
+            if http_request then
+                local res=http_request({Url=url, Method="GET", Headers=headers})
+                if res and res.Body then body=res.Body; ok=true
+                    DBGLbl.Text="fetch OK via http_request()"
+                end
+            end
+        end)
+    end
+
+    -- fallback: syn.request()
+    if not ok then
+        pcall(function()
+            if syn and syn.request then
+                local res=syn.request({Url=url, Method="GET", Headers=headers})
+                if res and res.Body then body=res.Body; ok=true
+                    DBGLbl.Text="fetch OK via syn.request()"
+                end
+            end
+        end)
+    end
+
+    if not ok or not body then
+        DBGLbl.Text="fetch FAILED - no request() in executor?"
+        warn("[JOINER] Could not fetch Discord - no compatible request() function found")
+        return {}
+    end
+
+    local dok,msgs=pcall(function() return HttpService:JSONDecode(body) end)
+    if not dok or type(msgs)~="table" then
+        DBGLbl.Text="fetch FAILED - JSON decode error"
+        warn("[JOINER] Failed to decode Discord response: "..tostring(msgs))
+        return {}
+    end
+
+    -- Discord returns error object if credentials are wrong
+    if msgs.code then
+        DBGLbl.Text="Discord error "..tostring(msgs.code)..": "..tostring(msgs.message)
+        warn("[JOINER] Discord API error: "..tostring(msgs.code).." "..tostring(msgs.message))
+        return {}
+    end
+
+    DBGLbl.Text="fetched "..tostring(#msgs).." msgs  "..os.date("%H:%M:%S")
     return msgs
 end
 
+-- ── ALERT PARSER ─────────────────────────────────────────────────────────────
+-- Field names must match exactly what Scout v8 sends:
+--   "Value"      -> e.g. "30.00M/s"
+--   "Name"       -> brainrot display name
+--   "Players"    -> e.g. "3/8"
+--   "Server ID"  -> backtick-wrapped UUID
+--   "Raw Value"  -> raw Generation text
 local function extractJobId(txt)
+    if not txt then return nil end
     return txt:match("([0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+)")
 end
 
@@ -293,16 +387,24 @@ local function parseAlerts(msgs)
         if msg.embeds and #msg.embeds>0 then
             for _,emb in ipairs(msg.embeds) do
                 if emb.title=="BRAINROT FOUND" and emb.fields then
-                    local name,valStr,mut,jobId,players="?","?","",nil,0
+                    local name,valStr,jobId,players="?","?",nil,0
                     for _,f in ipairs(emb.fields) do
-                        if f.name=="Name"      then name=f.value end
-                        if f.name=="Money/s"   then valStr=f.value:gsub("^%$",""):gsub("/s$","") end
-                        if f.name=="Mutation"  then if f.value~="None" then mut=f.value end end
-                        if f.name=="Server ID" then jobId=extractJobId(f.value) end
-                        if f.name=="Players"   then players=tonumber(f.value:match("^(%d+)")) or 0 end
+                        local fn=f.name or ""
+                        local fv=f.value or ""
+                        -- "Value" field from Scout v8: "30.00M/s"
+                        if fn=="Value"     then valStr=fv end
+                        -- "Name" field: brainrot display name
+                        if fn=="Name"      then name=fv end
+                        -- "Server ID" field: backtick-wrapped UUID
+                        if fn=="Server ID" then jobId=extractJobId(fv) end
+                        -- "Players" field: "3/8"
+                        if fn=="Players"   then players=tonumber(fv:match("^(%d+)")) or 0 end
                     end
                     if jobId then
-                        table.insert(alerts,{name=name,valStr=valStr,mut=mut,jobId=jobId,players=players})
+                        table.insert(alerts,{name=name,valStr=valStr,jobId=jobId,players=players})
+                        print("[JOINER] Parsed alert: "..name.." "..valStr.." srv="..jobId)
+                    else
+                        print("[JOINER] Embed had no Server ID - skipping")
                     end
                 end
             end
@@ -311,6 +413,32 @@ local function parseAlerts(msgs)
     return alerts
 end
 
+-- ── FETCH NOW button handler (wired here after fetchMsgs/parseAlerts defined) ─
+FetchNowBtn.MouseButton1Click:Connect(function()
+    FetchNowBtn.Text="FETCHING..."; FetchNowBtn.TextColor3=C3(200,200,80)
+    task.spawn(function()
+        local msgs=fetchMsgs()
+        local alerts=parseAlerts(msgs)
+        if #alerts>0 then
+            FetchNowBtn.Text="FETCH NOW  ("..#alerts.." NEW!)"
+            FetchNowBtn.TextColor3=C3(80,255,140)
+        else
+            FetchNowBtn.Text="FETCH NOW  (0 new msgs)"
+            FetchNowBtn.TextColor3=C3(80,220,120)
+        end
+        task.delay(3, function() FetchNowBtn.Text="FETCH NOW  (test)"; FetchNowBtn.TextColor3=C3(80,220,120) end)
+        for _,alert in ipairs(alerts) do
+            local timeStr=os.date("%H:%M:%S")
+            local entry={name=alert.name,valStr=alert.valStr,jobId=alert.jobId,players=alert.players,timeStr=timeStr}
+            table.insert(logEntries,entry); addLogRow(entry)
+            local cnt=getSpamCount(SpInput)
+            SL.Text="ALERT: "..alert.name.."  "..alert.valStr; SL.TextColor3=C3(0,230,150)
+            AL.Text=alert.name.."  "..alert.valStr; AL.TextColor3=C3(0,220,140)
+            doJoin(alert.jobId,cnt)
+        end
+    end)
+end)
+
 -- ── BACKGROUND LOOPS ──────────────────────────────────────────────────────────
 task.spawn(function()
     while running do dismissPopups(); task.wait(0.25) end
@@ -318,40 +446,45 @@ end)
 
 task.spawn(function()
     while running do
-        ProgLbl.Text="total joins: "..tostring(totalJoins).."  queue: "..tostring(#joinQueue)
+        ProgLbl.Text="joins: "..tostring(totalJoins).."  |  queue: "..tostring(#joinQueue)
         task.wait(1)
     end
 end)
 
--- MAIN POLL LOOP
+-- ── MAIN POLL LOOP ────────────────────────────────────────────────────────────
 task.spawn(function()
+    SL.Text="Fetching existing messages..."; SL.TextColor3=C3(80,100,140)
     local first=fetchMsgs()
     for _,m in ipairs(first) do seenIds[m.id]=true end
-    print("[JOINER] Synced "..tostring(#first).." existing messages. Watching for new alerts.")
-    SL.Text="Watching for alerts..."; SL.TextColor3=C3(80,100,140)
+    print("[JOINER] Synced "..tostring(#first).." existing messages. Now watching for NEW alerts.")
+    SL.Text="Watching for alerts...  (every "..FETCH_INTERVAL.."s)"; SL.TextColor3=C3(80,100,140)
 
     while running do
         task.wait(FETCH_INTERVAL)
         if not running then break end
 
+        SL.Text="Fetching Discord..."; SL.TextColor3=C3(80,120,180)
         local msgs=fetchMsgs()
         local alerts=parseAlerts(msgs)
+
+        if #alerts==0 then
+            SL.Text="Watching... ("..tostring(#logEntries).." alerts seen so far)"; SL.TextColor3=C3(55,80,120)
+        end
 
         for _,alert in ipairs(alerts) do
             local timeStr=os.date("%H:%M:%S")
             local entry={
-                name=alert.name, valStr=alert.valStr, mut=alert.mut,
+                name=alert.name, valStr=alert.valStr,
                 jobId=alert.jobId, players=alert.players, timeStr=timeStr
             }
             table.insert(logEntries,entry)
             addLogRow(entry)
 
             local cnt=getSpamCount(SpInput)
-            SL.Text="NEW ALERT: "..alert.name.."  $"..alert.valStr.."/s"; SL.TextColor3=C3(0,230,150)
-            AL.Text=alert.name.."  $"..alert.valStr.."/s"
-            if alert.mut~="" then AL.Text=AL.Text.."  |  "..alert.mut end
+            SL.Text="NEW ALERT: "..alert.name.."  "..alert.valStr; SL.TextColor3=C3(0,230,150)
+            AL.Text=alert.name.."  "..alert.valStr.."  |  "..tostring(alert.players).." players"
             AL.TextColor3=C3(0,220,140)
-            print("[JOINER] ALERT: "..alert.name.." $"..alert.valStr.."/s  mut:"..tostring(alert.mut).." -> spam x"..tostring(cnt))
+            print("[JOINER] NEW ALERT: "..alert.name.." "..alert.valStr.." -> spam x"..tostring(cnt))
             doJoin(alert.jobId,cnt)
         end
     end
