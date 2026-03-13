@@ -1,14 +1,3 @@
--- BANANA SCOUT v8
--- FIXED TIMING: waits for AnimalOverhead objects to appear before scanning.
--- Scans for up to 12 seconds per server, gives up and hops if nothing appears.
--- Webhook: request() / http_request() / syn.request() [executor compatible]
--- Teleport: TeleportService:Teleport(PlaceId, player)  [confirmed working]
--- Scan: AnimalOverhead -> Generation -> $ parser        [confirmed working]
--- No +=  No *=
-
--- ============================================================
--- CONFIG
--- ============================================================
 local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
 local MIN_VALUE_MPS = 1e3    -- report servers with brainrots >= this (30M default)
 local WAIT_FOR_LOAD = 2       -- seconds to wait after joining for brainrots to appear
