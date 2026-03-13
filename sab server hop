@@ -1,5 +1,4 @@
--- CONFIG
--- ============================================================
+
 local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
 local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
 local SETTINGS_FILE = "BSH_settings.json"   -- saved in executor workspace folder
