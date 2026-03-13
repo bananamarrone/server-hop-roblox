@@ -1,4 +1,4 @@
--- BANANA SCOUT v3 (fixed: stop button now works instantly)
+-- BANANA SCOUT v4 (fixed stop, fixed value parser to match game format)
 -- Run on an alt account. Hops servers, scans for brainrots, posts to Discord webhook.
 -- No +=, no *=, no block comments. Works on Ronix, Delta, KRNL, Synapse, Fluxus.
 
@@ -6,7 +6,7 @@
 -- CONFIG  (edit these)
 -- ============================================================
 local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
-local MIN_VALUE_MPS = 50e6    -- minimum money/s to report (default 50M/s)
+local MIN_VALUE_MPS = 1e6    -- minimum money/s to report (default 50M/s)
 local MIN_PLAYERS   = 3
 local SCAN_WINDOW   = 1.5
 -- ============================================================
@@ -60,14 +60,15 @@ end
 
 local function parseValue(raw)
     if not raw or raw=="" then return 0 end
-    local t=raw:gsub("^%s*%$?%s*",""):lower():gsub("%s+","")
-    if t=="" then return 0 end
-    local n,s=t:match("^([%d%.]+)([kmbt]?)$"); n=tonumber(n)
-    if not n then return 0 end
-    if     s=="k" then n=n*1e3
-    elseif s=="m" then n=n*1e6
-    elseif s=="b" then n=n*1e9
-    elseif s=="t" then n=n*1e12 end
+    local n,s=raw:match("%$([%d%.]+)%s*([kKmMbBtT]?)")
+    n=tonumber(n) or 0
+    if s then
+        s=s:lower()
+        if     s=="k" then n=n*1e3
+        elseif s=="m" then n=n*1e6
+        elseif s=="b" then n=n*1e9
+        elseif s=="t" then n=n*1e12 end
+    end
     return n
 end
 
