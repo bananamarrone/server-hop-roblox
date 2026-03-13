@@ -3,6 +3,7 @@
 -- ============================================================
 local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
 local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
+local SETTINGS_FILE = "BSH_settings.json"   -- saved in executor workspace folder
 -- ============================================================
 
 local Players          = game:GetService("Players")
@@ -34,13 +35,61 @@ local function notify(title, text)
     end)
 end
 
+-- ── FILE I/O ──────────────────────────────────────────────────────────────────
+local function safeRead(f)
+    if not (isfile and isfile(f)) then return nil end
+    local ok,d=pcall(readfile,f); return ok and d or nil
+end
+local function safeWrite(f,d)
+    pcall(function() if writefile then writefile(f,d) end end)
+end
+
+-- ── SETTINGS (persisted in executor workspace) ────────────────────────────────
+local Settings = {
+    targetValue = 30e6,
+    blacklist   = {},
+    whitelist   = {},
+}
+
+local function loadSettings()
+    local raw = safeRead(SETTINGS_FILE)
+    if not raw then return end
+    local ok,d = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not ok or type(d)~="table" then return end
+    if type(d.targetValue)=="number" and d.targetValue>0 then
+        Settings.targetValue = d.targetValue
+    end
+    if type(d.blacklist)=="table" then Settings.blacklist = d.blacklist end
+    if type(d.whitelist)=="table" then Settings.whitelist = d.whitelist end
+    log("Settings loaded: target=$"..tostring(Settings.targetValue/1e6).."m  bl="..#Settings.blacklist.."  wl="..#Settings.whitelist)
+end
+
+local function saveSettings()
+    local ok,enc = pcall(function() return HttpService:JSONEncode(Settings) end)
+    if ok then
+        safeWrite(SETTINGS_FILE, enc)
+        log("Settings saved.")
+    end
+end
+
+loadSettings()
+
+local blacklistSet = {}
+local whitelistSet = {}
+local function rebuildSets()
+    blacklistSet={}; whitelistSet={}
+    for _,v in ipairs(Settings.blacklist) do blacklistSet[v:lower()]=true end
+    for _,v in ipairs(Settings.whitelist) do whitelistSet[v:lower()]=true end
+end
+rebuildSets()
+
 -- ── VALUE PARSER ─────────────────────────────────────────────────────────────
 local function parseValue(t)
     if not t then return 0 end
     local n,s = t:match("%$([%d%.]+)%s*([kKmMbBtT]?)")
     n = tonumber(n) or 0
     if s then
-        s = s:lower()
+        s=s:lower()
         if     s=="k" then n=n*1e3
         elseif s=="m" then n=n*1e6
         elseif s=="b" then n=n*1e9
@@ -60,10 +109,9 @@ end
 
 local function parseInput(txt)
     if not txt or txt=="" then return 0 end
-    local clean = txt:lower():gsub("%s","")
-    local n,s = clean:match("^([%d%.]+)([kmbt]?)$")
-    n = tonumber(n)
-    if not n then return 0 end
+    local clean=txt:lower():gsub("%s","")
+    local n,s=clean:match("^([%d%.]+)([kmbt]?)$")
+    n=tonumber(n); if not n then return 0 end
     if     s=="k" then n=n*1e3
     elseif s=="m" then n=n*1e6
     elseif s=="b" then n=n*1e9
@@ -73,34 +121,26 @@ end
 
 -- ── SCANNER ───────────────────────────────────────────────────────────────────
 local function scanBest()
-    local bestVal,bestName,bestRaw = -1,"?",""
+    local bestVal,bestName,bestRaw=-1,"?",""
     for _,o in next,workspace:GetDescendants() do
         if o.Name=="AnimalOverhead" then
-            local g = o:FindFirstChild("Generation")
+            local g=o:FindFirstChild("Generation")
             if g then
-                local v = parseValue(g.Text)
+                local v=parseValue(g.Text)
                 if v>bestVal then
                     bestVal=v; bestRaw=g.Text
-                    local d = o:FindFirstChild("DisplayName")
-                    bestName = (d and d.Text~="") and d.Text or "?"
+                    local d=o:FindFirstChild("DisplayName")
+                    bestName=(d and d.Text~="") and d.Text or "?"
                 end
             end
         end
     end
-    return bestVal, bestName, bestRaw
+    return bestVal,bestName,bestRaw
 end
 
 -- ── KEY SYSTEM ────────────────────────────────────────────────────────────────
-local KEY_FILE = "BSH_key.json"
-local function safeRead(f)
-    if not (isfile and isfile(f)) then return nil end
-    local ok,d=pcall(readfile,f); return ok and d or nil
-end
-local function safeWrite(f,d)
-    pcall(function() if writefile then writefile(f,d) end end)
-end
+local KEY_FILE="BSH_key.json"
 local function todayStr() return os.date("!%Y-%m-%d") end
-
 local keyValid=false
 local function loadKeyCache()
     local raw=safeRead(KEY_FILE); if not raw then return end
@@ -118,39 +158,12 @@ local function fetchTodayKey()
 end
 loadKeyCache()
 
--- ── STATE PERSISTENCE ─────────────────────────────────────────────────────────
-local STATE_FILE = "BSH_state.json"
-local State = {targetValue=30e6, blacklist={}, whitelist={}}
-local function loadState()
-    local raw=safeRead(STATE_FILE); if not raw then return end
-    local ok,d=pcall(function() return HttpService:JSONDecode(raw) end)
-    if not ok or type(d)~="table" then return end
-    if type(d.targetValue)=="number" then State.targetValue=d.targetValue end
-    if type(d.blacklist)=="table"    then State.blacklist=d.blacklist     end
-    if type(d.whitelist)=="table"    then State.whitelist=d.whitelist     end
-end
-local function saveState()
-    local ok,enc=pcall(function() return HttpService:JSONEncode(State) end)
-    if ok then safeWrite(STATE_FILE,enc) end
-end
-loadState()
-
-local blacklistSet={}
-local whitelistSet={}
-local function rebuildSets()
-    blacklistSet={}; whitelistSet={}
-    for _,v in ipairs(State.blacklist) do blacklistSet[v:lower()]=true end
-    for _,v in ipairs(State.whitelist) do whitelistSet[v:lower()]=true end
-end
-rebuildSets()
-
 -- ── AUTO-EXECUTE ──────────────────────────────────────────────────────────────
-local SCRIPT_FILE="BSH_v17.lua"
+local SCRIPT_FILE="BSH_v18.lua"
 local SCRIPT_SOURCE=nil
 pcall(function()
     if isfile and isfile(SCRIPT_FILE) then
-        local ok,r=pcall(readfile,SCRIPT_FILE)
-        if ok then SCRIPT_SOURCE=r end
+        local ok,r=pcall(readfile,SCRIPT_FILE); if ok then SCRIPT_SOURCE=r end
     end
 end)
 local function queueSelf()
@@ -170,7 +183,6 @@ end
 -- ── HOP ───────────────────────────────────────────────────────────────────────
 local hunting=false
 local hopCount=0
-
 local function doHop()
     hopCount=hopCount+1
     queueSelf()
@@ -183,14 +195,13 @@ end
 -- ═══════════════════════════════════════════════════════════════════════
 -- GUI
 -- ═══════════════════════════════════════════════════════════════════════
-local CW = isMobile and 310 or 292
+local CW=isMobile and 310 or 292
 
--- ── KEY GUI ───────────────────────────────────────────────────────────────────
+-- KEY GUI
 local KeyGui=Instance.new("ScreenGui")
 KeyGui.Name="BSH_Key"; KeyGui.DisplayOrder=5000
 KeyGui.ResetOnSpawn=false; KeyGui.IgnoreGuiInset=true
 KeyGui.Enabled=not keyValid; KeyGui.Parent=CoreGui
-
 local KW=isMobile and 320 or 340
 local KCard=Instance.new("Frame",KeyGui)
 KCard.Size=U2(0,KW,0,224); KCard.Position=U2(0.5,-KW/2,0.5,-112)
@@ -208,8 +219,8 @@ KTitle.TextSize=18; KTitle.Text="BANANA SERVER HOP"
 KTitle.TextColor3=C3(0,220,150); KTitle.TextXAlignment=Enum.TextXAlignment.Left
 local KSub=Instance.new("TextLabel",KCard)
 KSub.Size=U2(1,-32,0,14); KSub.Position=U2(0,16,0,50)
-KSub.BackgroundTransparency=1; KSub.Font=Enum.Font.Gotham
-KSub.TextSize=10; KSub.Text="Enter today's key. Resets daily."
+KSub.BackgroundTransparency=1; KSub.Font=Enum.Font.Gotham; KSub.TextSize=10
+KSub.Text="Enter today's key. Resets daily."
 KSub.TextColor3=C3(55,75,110); KSub.TextXAlignment=Enum.TextXAlignment.Left
 local KGetBtn=Instance.new("TextButton",KCard)
 KGetBtn.Size=U2(1,-32,0,34); KGetBtn.Position=U2(0,16,0,70)
@@ -233,9 +244,8 @@ local KIStroke=Instance.new("UIStroke",KIF)
 KIStroke.Color=C3(24,36,58); KIStroke.Thickness=1
 local KInput=Instance.new("TextBox",KIF)
 KInput.Size=U2(1,-16,1,0); KInput.Position=U2(0,8,0,0)
-KInput.BackgroundTransparency=1; KInput.Font=Enum.Font.GothamBold
-KInput.TextSize=14; KInput.Text=""
-KInput.PlaceholderText="paste key here..."
+KInput.BackgroundTransparency=1; KInput.Font=Enum.Font.GothamBold; KInput.TextSize=14
+KInput.Text=""; KInput.PlaceholderText="paste key here..."
 KInput.PlaceholderColor3=C3(38,52,76); KInput.TextColor3=C3(220,240,255)
 KInput.ClearTextOnFocus=false; KInput.BorderSizePixel=0
 local KSubmit=Instance.new("TextButton",KCard)
@@ -248,15 +258,12 @@ Instance.new("UIGradient",KSubmit).Color=ColorSequence.new({
     ColorSequenceKeypoint.new(0,C3(0,220,150)),ColorSequenceKeypoint.new(1,C3(0,180,255))})
 local KStatus=Instance.new("TextLabel",KCard)
 KStatus.Size=U2(1,-32,0,14); KStatus.Position=U2(0,16,0,202)
-KStatus.BackgroundTransparency=1; KStatus.Font=Enum.Font.Gotham
-KStatus.TextSize=10; KStatus.Text=""
+KStatus.BackgroundTransparency=1; KStatus.Font=Enum.Font.Gotham; KStatus.TextSize=10; KStatus.Text=""
 KStatus.TextColor3=C3(80,100,140); KStatus.TextXAlignment=Enum.TextXAlignment.Center
 
 local MainSG=nil
-
 local function unlockUI()
-    keyValid=true; saveKeyCache()
-    KeyGui.Enabled=false
+    keyValid=true; saveKeyCache(); KeyGui.Enabled=false
     if MainSG then MainSG.Enabled=true end
     notify("Key Accepted!","Banana Server Hop ready.")
 end
@@ -266,7 +273,8 @@ local function validateKey(k)
     task.spawn(function()
         local tk=fetchTodayKey()
         if not tk then
-            KSubmit.Text="CONFIRM KEY"; KStatus.Text="Cannot reach key server."; KStatus.TextColor3=C3(200,100,40)
+            KSubmit.Text="CONFIRM KEY"; KStatus.Text="Cannot reach key server."
+            KStatus.TextColor3=C3(200,100,40)
             TweenService:Create(KIStroke,TI(0.1),{Color=C3(180,80,30)}):Play()
             task.delay(1.5,function() KIStroke.Color=C3(24,36,58) end); return
         end
@@ -274,7 +282,8 @@ local function validateKey(k)
             KStatus.Text="Access granted!"; KStatus.TextColor3=C3(0,220,140)
             task.wait(0.4); unlockUI()
         else
-            KSubmit.Text="CONFIRM KEY"; KStatus.Text="Wrong key."; KStatus.TextColor3=C3(210,60,60)
+            KSubmit.Text="CONFIRM KEY"; KStatus.Text="Wrong key."
+            KStatus.TextColor3=C3(210,60,60)
             TweenService:Create(KIStroke,TI(0.1),{Color=C3(200,40,40)}):Play()
             task.delay(1.5,function() KIStroke.Color=C3(24,36,58) end)
         end
@@ -283,31 +292,31 @@ end
 KSubmit.MouseButton1Click:Connect(function() validateKey(KInput.Text:match("^%s*(.-)%s*$")) end)
 KInput.FocusLost:Connect(function(e) if e then validateKey(KInput.Text:match("^%s*(.-)%s*$")) end end)
 
--- ── HELPER: make a small button ───────────────────────────────────────────────
-local function mkBtn(parent,text,y,r,g,b,h)
-    h = h or 30
-    local b2=Instance.new("TextButton",parent)
-    b2.Size=U2(1,-24,0,h); b2.Position=U2(0,12,0,y)
-    b2.BackgroundColor3=C3(r,g,b); b2.BorderSizePixel=0
-    b2.Font=Enum.Font.GothamBold; b2.TextSize=11
-    b2.Text=text; b2.TextColor3=C3(230,240,255); b2.AutoButtonColor=false
-    Instance.new("UICorner",b2).CornerRadius=UDim.new(0,8)
-    return b2
-end
+-- HELPERS
 local function mkDiv(parent,y)
     local d=Instance.new("Frame",parent)
     d.Size=U2(1,-24,0,1); d.Position=U2(0,12,0,y)
     d.BackgroundColor3=C3(18,28,45); d.BorderSizePixel=0
 end
+local function mkBtn(parent,text,y,r,g,b,h,tr,tg,tb)
+    h=h or 30; tr=tr or 230; tg=tg or 240; tb=tb or 255
+    local b2=Instance.new("TextButton",parent)
+    b2.Size=U2(1,-24,0,h); b2.Position=U2(0,12,0,y)
+    b2.BackgroundColor3=C3(r,g,b); b2.BorderSizePixel=0
+    b2.Font=Enum.Font.GothamBold; b2.TextSize=11
+    b2.Text=text; b2.TextColor3=C3(tr,tg,tb); b2.AutoButtonColor=false
+    Instance.new("UICorner",b2).CornerRadius=UDim.new(0,8)
+    return b2
+end
 
--- ── MAIN GUI ──────────────────────────────────────────────────────────────────
+-- MAIN GUI
+local CARD_H=440
 local SG=Instance.new("ScreenGui")
 MainSG=SG
 SG.Name="BSH_Main"; SG.DisplayOrder=1000
 SG.ResetOnSpawn=false; SG.IgnoreGuiInset=true
 SG.Enabled=keyValid; SG.Parent=CoreGui
 
-local CARD_H=430
 local Glow=Instance.new("Frame",SG)
 Glow.Size=U2(0,CW+16,0,CARD_H+16); Glow.Position=U2(0,22,0,22)
 Glow.BackgroundColor3=C3(0,255,160); Glow.BackgroundTransparency=0.87; Glow.BorderSizePixel=0
@@ -339,9 +348,9 @@ Instance.new("UICorner",LiveDot).CornerRadius=UDim.new(1,0)
 
 local TitleL=Instance.new("TextLabel",Header)
 TitleL.Size=U2(1,-90,1,0); TitleL.Position=U2(0,30,0,0)
-TitleL.BackgroundTransparency=1; TitleL.Font=Enum.Font.GothamBold
-TitleL.TextSize=11; TitleL.Text="BANANA SERVER HOP v17"
-TitleL.TextColor3=C3(170,190,220); TitleL.TextXAlignment=Enum.TextXAlignment.Left
+TitleL.BackgroundTransparency=1; TitleL.Font=Enum.Font.GothamBold; TitleL.TextSize=11
+TitleL.Text="BANANA SERVER HOP v18"; TitleL.TextColor3=C3(170,190,220)
+TitleL.TextXAlignment=Enum.TextXAlignment.Left
 
 local HopB=Instance.new("TextLabel",Header)
 HopB.Size=U2(0,68,0,22); HopB.Position=U2(1,-78,0.5,-11)
@@ -387,33 +396,45 @@ IFrm.Size=U2(1,-24,0,38); IFrm.Position=U2(0,12,0,67)
 IFrm.BackgroundColor3=C3(11,16,26); IFrm.BorderSizePixel=0
 Instance.new("UICorner",IFrm).CornerRadius=UDim.new(0,10)
 local IStroke=Instance.new("UIStroke",IFrm)
-IStroke.Color=C3(24,36,58); IStroke.Thickness=1
+IStroke.Color=C3(0,150,90); IStroke.Thickness=1
 local DollarL=Instance.new("TextLabel",IFrm)
 DollarL.Size=U2(0,26,1,0); DollarL.BackgroundTransparency=1
 DollarL.Font=Enum.Font.GothamBold; DollarL.TextSize=17
 DollarL.Text="$"; DollarL.TextColor3=C3(0,200,130)
 local InputBox=Instance.new("TextBox",IFrm)
 InputBox.Size=U2(1,-28,1,0); InputBox.Position=U2(0,26,0,0)
-InputBox.BackgroundTransparency=1; InputBox.Font=Enum.Font.GothamBold
-InputBox.TextSize=17; InputBox.Text=string.format("%.0f",State.targetValue/1e6).."m"
+InputBox.BackgroundTransparency=1; InputBox.Font=Enum.Font.GothamBold; InputBox.TextSize=17
 InputBox.PlaceholderText="30m"; InputBox.PlaceholderColor3=C3(35,52,78)
 InputBox.TextColor3=C3(230,245,255); InputBox.ClearTextOnFocus=false; InputBox.BorderSizePixel=0
 
-local targetValue=State.targetValue
+-- display saved target on load
+local function valToDisplayStr(n)
+    if n>=1e9 then return string.format("%.2fb",n/1e9)
+    elseif n>=1e6 then return string.format("%.0fm",n/1e6)
+    elseif n>=1e3 then return string.format("%.0fk",n/1e3)
+    else return tostring(math.floor(n)) end
+end
+InputBox.Text=valToDisplayStr(Settings.targetValue)
+
+local targetValue=Settings.targetValue
+
 InputBox.FocusLost:Connect(function()
     local v=parseInput(InputBox.Text)
     if v>0 then
-        targetValue=v; State.targetValue=v; saveState()
+        targetValue=v
+        Settings.targetValue=v
+        saveSettings()
         TweenService:Create(IStroke,TI(0.2),{Color=C3(0,150,90)}):Play()
+        log("Target saved: $"..fmtVal(v))
     else
+        InputBox.Text=valToDisplayStr(Settings.targetValue)
         TweenService:Create(IStroke,TI(0.2),{Color=C3(180,40,40)}):Play()
-        task.delay(1,function() TweenService:Create(IStroke,TI(0.2),{Color=C3(24,36,58)}):Play() end)
+        task.delay(1,function() TweenService:Create(IStroke,TI(0.2),{Color=C3(0,150,90)}):Play() end)
     end
 end)
 
 mkDiv(Card,112)
 
--- status
 local StatL=Instance.new("TextLabel",Card)
 StatL.Size=U2(1,-24,0,18); StatL.Position=U2(0,12,0,120)
 StatL.BackgroundTransparency=1; StatL.Font=Enum.Font.GothamBold; StatL.TextSize=11
@@ -425,7 +446,6 @@ BestL.BackgroundTransparency=1; BestL.Font=Enum.Font.Gotham; BestL.TextSize=10
 BestL.Text="best seen: —"; BestL.TextColor3=C3(38,55,82)
 BestL.TextXAlignment=Enum.TextXAlignment.Left; BestL.TextWrapped=true
 
--- progress bar
 local BarBG=Instance.new("Frame",Card)
 BarBG.Size=U2(1,-24,0,3); BarBG.Position=U2(0,12,0,172)
 BarBG.BackgroundColor3=C3(14,22,36); BarBG.BorderSizePixel=0
@@ -441,7 +461,6 @@ end
 
 mkDiv(Card,180)
 
--- START / STOP button
 local StartBtn=Instance.new("TextButton",Card)
 StartBtn.Size=U2(1,-24,0,44); StartBtn.Position=U2(0,12,0,188)
 StartBtn.BackgroundColor3=C3(0,200,140); StartBtn.BorderSizePixel=0
@@ -455,51 +474,44 @@ BtnG.Rotation=135
 
 mkDiv(Card,240)
 
--- FORCE HOP button
-local ForceBtn=mkBtn(Card,"FORCE HOP NOW",248,18,30,50,32)
-ForceBtn.TextColor3=C3(80,160,255)
+local ForceBtn=mkBtn(Card,"FORCE HOP NOW",248,14,22,40,32,80,160,255)
 Instance.new("UIStroke",ForceBtn).Color=C3(30,55,90)
 
 mkDiv(Card,288)
 
--- BLACKLIST button
-local BLBtn=mkBtn(Card,"BLACKLIST  ("..#State.blacklist..")",296,18,12,28,32)
-BLBtn.TextColor3=C3(220,80,80)
+local BLBtn=mkBtn(Card,"BLACKLIST  ("..#Settings.blacklist..")",296,40,12,12,32,220,80,80)
 Instance.new("UIStroke",BLBtn).Color=C3(80,28,28)
 
--- WHITELIST button
-local WLBtn=mkBtn(Card,"WHITELIST  ("..#State.whitelist..")",336,18,28,12,32)
-WLBtn.TextColor3=C3(80,220,120)
+local WLBtn=mkBtn(Card,"WHITELIST  ("..#Settings.whitelist..")",336,12,40,12,32,80,220,120)
 Instance.new("UIStroke",WLBtn).Color=C3(28,80,28)
 
 mkDiv(Card,376)
 
--- current server info
-local SrvL=Instance.new("TextLabel",Card)
-SrvL.Size=U2(1,-24,0,12); SrvL.Position=U2(0,12,0,382)
-SrvL.BackgroundTransparency=1; SrvL.Font=Enum.Font.Gotham; SrvL.TextSize=9
-SrvL.Text="current server: "..game.JobId:sub(1,16).."..."; SrvL.TextColor3=C3(30,45,68)
-SrvL.TextXAlignment=Enum.TextXAlignment.Left
+local SavedLbl=Instance.new("TextLabel",Card)
+SavedLbl.Size=U2(1,-24,0,12); SavedLbl.Position=U2(0,12,0,382)
+SavedLbl.BackgroundTransparency=1; SavedLbl.Font=Enum.Font.Gotham; SavedLbl.TextSize=9
+SavedLbl.Text="settings auto-saved to: "..SETTINGS_FILE; SavedLbl.TextColor3=C3(30,50,75)
+SavedLbl.TextXAlignment=Enum.TextXAlignment.Left
 
-local PoolL=Instance.new("TextLabel",Card)
-PoolL.Size=U2(1,-24,0,12); PoolL.Position=U2(0,12,0,396)
-PoolL.BackgroundTransparency=1; PoolL.Font=Enum.Font.Gotham; PoolL.TextSize=9
-PoolL.Text="drag header to move"; PoolL.TextColor3=C3(22,34,52)
-PoolL.TextXAlignment=Enum.TextXAlignment.Left
+local SrvLbl=Instance.new("TextLabel",Card)
+SrvLbl.Size=U2(1,-24,0,12); SrvLbl.Position=U2(0,12,0,396)
+SrvLbl.BackgroundTransparency=1; SrvLbl.Font=Enum.Font.Gotham; SrvLbl.TextSize=9
+SrvLbl.Text="job: "..game.JobId:sub(1,20).."..."; SrvLbl.TextColor3=C3(22,36,55)
+SrvLbl.TextXAlignment=Enum.TextXAlignment.Left
 
--- footer hop count
 local FootL=Instance.new("TextLabel",Card)
 FootL.Size=U2(1,-24,0,12); FootL.Position=U2(0,12,0,412)
 FootL.BackgroundTransparency=1; FootL.Font=Enum.Font.Gotham; FootL.TextSize=9
-FootL.Text=""; FootL.TextColor3=C3(35,55,80); FootL.TextXAlignment=Enum.TextXAlignment.Left
+FootL.Text="drag header to move"; FootL.TextColor3=C3(20,32,50)
+FootL.TextXAlignment=Enum.TextXAlignment.Left
 
--- ── BLACKLIST / WHITELIST POPUP ───────────────────────────────────────────────
-local function mkListPopup(title, listRef, btnRef, listKey, onSave)
+-- BLACKLIST / WHITELIST popups
+local function mkListPopup(title,listRef,listKey,onSave)
     local Pop=Instance.new("ScreenGui")
     Pop.Name="BSH_Popup"; Pop.DisplayOrder=2000
     Pop.ResetOnSpawn=false; Pop.IgnoreGuiInset=true; Pop.Parent=CoreGui
     local PCard=Instance.new("Frame",Pop)
-    PCard.Size=U2(0,320,0,280); PCard.Position=U2(0.5,-160,0.5,-140)
+    PCard.Size=U2(0,320,0,290); PCard.Position=U2(0.5,-160,0.5,-145)
     PCard.BackgroundColor3=C3(8,11,18); PCard.BorderSizePixel=0; PCard.Active=true
     Instance.new("UICorner",PCard).CornerRadius=UDim.new(0,14)
     Instance.new("UIStroke",PCard).Color=C3(25,38,58)
@@ -508,12 +520,12 @@ local function mkListPopup(title, listRef, btnRef, listKey, onSave)
     PTitle.BackgroundTransparency=1; PTitle.Font=Enum.Font.GothamBold; PTitle.TextSize=14
     PTitle.Text=title; PTitle.TextColor3=C3(200,220,255); PTitle.TextXAlignment=Enum.TextXAlignment.Left
     local PInfo=Instance.new("TextLabel",PCard)
-    PInfo.Size=U2(1,-32,0,13); PInfo.Position=U2(0,16,0,38)
+    PInfo.Size=U2(1,-32,0,13); PInfo.Position=U2(0,16,0,40)
     PInfo.BackgroundTransparency=1; PInfo.Font=Enum.Font.Gotham; PInfo.TextSize=9
-    PInfo.Text="One name per line. Exact match (case-insensitive)."
+    PInfo.Text="One name per line. Case-insensitive. Saved automatically."
     PInfo.TextColor3=C3(55,75,110); PInfo.TextXAlignment=Enum.TextXAlignment.Left
     local PFrm=Instance.new("Frame",PCard)
-    PFrm.Size=U2(1,-32,0,150); PFrm.Position=U2(0,16,0,56)
+    PFrm.Size=U2(1,-32,0,160); PFrm.Position=U2(0,16,0,58)
     PFrm.BackgroundColor3=C3(11,16,26); PFrm.BorderSizePixel=0
     Instance.new("UICorner",PFrm).CornerRadius=UDim.new(0,8)
     Instance.new("UIStroke",PFrm).Color=C3(24,36,58)
@@ -524,55 +536,55 @@ local function mkListPopup(title, listRef, btnRef, listKey, onSave)
     PBox.ClearTextOnFocus=false; PBox.MultiLine=true; PBox.TextYAlignment=Enum.TextYAlignment.Top
     PBox.Text=table.concat(listRef,"\n")
     local PSave=Instance.new("TextButton",PCard)
-    PSave.Size=U2(0.5,-8,0,32); PSave.Position=U2(0,16,0,216)
+    PSave.Size=U2(0.5,-8,0,32); PSave.Position=U2(0,16,0,228)
     PSave.BackgroundColor3=C3(0,160,100); PSave.BorderSizePixel=0
     PSave.Font=Enum.Font.GothamBold; PSave.TextSize=12
     PSave.Text="SAVE"; PSave.TextColor3=C3(0,8,6); PSave.AutoButtonColor=false
     Instance.new("UICorner",PSave).CornerRadius=UDim.new(0,7)
     local PClose=Instance.new("TextButton",PCard)
-    PClose.Size=U2(0.5,-8,0,32); PClose.Position=U2(0.5,0,0,216)
+    PClose.Size=U2(0.5,-8,0,32); PClose.Position=U2(0.5,0,0,228)
     PClose.BackgroundColor3=C3(50,20,20); PClose.BorderSizePixel=0
     PClose.Font=Enum.Font.GothamBold; PClose.TextSize=12
     PClose.Text="CLOSE"; PClose.TextColor3=C3(220,100,100); PClose.AutoButtonColor=false
     Instance.new("UICorner",PClose).CornerRadius=UDim.new(0,7)
+    local PSaved=Instance.new("TextLabel",PCard)
+    PSaved.Size=U2(1,-32,0,14); PSaved.Position=U2(0,16,0,264)
+    PSaved.BackgroundTransparency=1; PSaved.Font=Enum.Font.Gotham; PSaved.TextSize=9
+    PSaved.Text=""; PSaved.TextColor3=C3(0,200,120); PSaved.TextXAlignment=Enum.TextXAlignment.Center
     PSave.MouseButton1Click:Connect(function()
         local newList={}
         for line in PBox.Text:gmatch("[^\n]+") do
-            local trimmed=line:match("^%s*(.-)%s*$")
-            if trimmed~="" then table.insert(newList,trimmed) end
+            local t=line:match("^%s*(.-)%s*$")
+            if t~="" then table.insert(newList,t) end
         end
-        State[listKey]=newList
-        saveState(); rebuildSets(); onSave()
-        Pop:Destroy()
+        Settings[listKey]=newList
+        saveSettings(); rebuildSets(); onSave(newList)
+        PSaved.Text="Saved "..#newList.." entries to "..SETTINGS_FILE
     end)
     PClose.MouseButton1Click:Connect(function() Pop:Destroy() end)
 end
 
 BLBtn.MouseButton1Click:Connect(function()
-    mkListPopup("BLACKLIST  (skip these brainrots)",State.blacklist,BLBtn,"blacklist",function()
-        BLBtn.Text="BLACKLIST  ("..#State.blacklist..")"
+    mkListPopup("BLACKLIST  (skip these brainrots)",Settings.blacklist,"blacklist",function(l)
+        BLBtn.Text="BLACKLIST  ("..#l..")"
     end)
 end)
 WLBtn.MouseButton1Click:Connect(function()
-    mkListPopup("WHITELIST  (only stop for these)",State.whitelist,WLBtn,"whitelist",function()
-        WLBtn.Text="WHITELIST  ("..#State.whitelist..")"
+    mkListPopup("WHITELIST  (only stop for these)",Settings.whitelist,"whitelist",function(l)
+        WLBtn.Text="WHITELIST  ("..#l..")"
     end)
 end)
 
--- ── HUNT LOGIC ────────────────────────────────────────────────────────────────
+-- HUNT LOGIC
 local function setStatus(txt,r,g,b)
     StatL.Text=txt; StatL.TextColor3=C3(r,g,b)
 end
-
 local function isWanted(name)
     local nl=name:lower()
-    if next(whitelistSet)~=nil then
-        return whitelistSet[nl]==true
-    end
+    if next(whitelistSet)~=nil then return whitelistSet[nl]==true end
     if blacklistSet[nl] then return false end
     return true
 end
-
 local function stopHunt()
     hunting=false
     StartBtn.Text="START HUNTING"; StartBtn.TextColor3=C3(0,8,6)
@@ -581,19 +593,17 @@ local function stopHunt()
     setStatus("STOPPED",70,70,95); setBar(0)
     LiveDot.BackgroundColor3=C3(35,48,68)
 end
-
 local function startHunt()
     if targetValue<=0 then
         setStatus("SET A TARGET FIRST!",255,70,70)
         TweenService:Create(IStroke,TI(0.1),{Color=C3(200,40,40)}):Play()
-        task.delay(1.2,function() IStroke.Color=C3(24,36,58) end); return
+        task.delay(1.2,function() IStroke.Color=C3(0,150,90) end); return
     end
     hunting=true
     StartBtn.Text="STOP"; StartBtn.TextColor3=C3(255,200,200)
     BtnG.Color=ColorSequence.new({
         ColorSequenceKeypoint.new(0,C3(220,40,40)),ColorSequenceKeypoint.new(1,C3(160,20,70))})
     log("Hunt started. Target: $"..fmtVal(targetValue))
-
     task.spawn(function()
         while hunting do
             local bestVal,bestName,bestRaw=-1,"?",""
@@ -611,14 +621,11 @@ local function startHunt()
                 end
                 task.wait(0.04)
             end
-
             if not hunting then break end
-
             if bestVal>=targetValue and isWanted(bestName) then
                 setStatus("FOUND!  "..bestName.."  "..bestRaw,0,255,160)
-                BestL.Text="STAY!  "..bestName.."  "..bestRaw
-                BestL.TextColor3=C3(0,220,140); setBar(1)
-                playAlert()
+                BestL.Text="STAY!  "..bestName.."  "..bestRaw; BestL.TextColor3=C3(0,220,140)
+                setBar(1); playAlert()
                 for _=1,5 do
                     TweenService:Create(CardBorder,TI(0.12),{Color=C3(0,255,150)}):Play()
                     task.wait(0.15)
@@ -627,23 +634,19 @@ local function startHunt()
                 end
                 stopHunt(); break
             elseif bestVal>=targetValue and not isWanted(bestName) then
-                setStatus("SKIPPED (blacklisted): "..bestName,120,80,40)
-                log("Skipping blacklisted: "..bestName)
+                setStatus("SKIP (blacklisted): "..bestName,120,80,40)
+                log("Skipping: "..bestName)
             end
-
-            hopCount=hopCount+1
-            HopB.Text="HOPS: "..hopCount
+            hopCount=hopCount+1; HopB.Text="HOPS: "..hopCount
             FootL.Text="last: "..bestName.."  "..bestRaw
             setStatus("HOP #"..hopCount,70,120,200); setBar(0)
             doHop()
         end
     end)
 end
-
 StartBtn.MouseButton1Click:Connect(function()
     if hunting then stopHunt() else startHunt() end
 end)
-
 ForceBtn.MouseButton1Click:Connect(function()
     if not hunting then
         hopCount=hopCount+1; HopB.Text="HOPS: "..hopCount
@@ -654,17 +657,14 @@ ForceBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- live dot pulse
 task.spawn(function()
     local t=0
     while true do
         t=t+0.04
         local a=(math.sin(t*3)+1)/2
-        if hunting then
-            LiveDot.BackgroundColor3=C3(0,math.floor(190+a*65),math.floor(110+a*80))
-        end
+        if hunting then LiveDot.BackgroundColor3=C3(0,math.floor(190+a*65),math.floor(110+a*80)) end
         task.wait(0.04)
     end
 end)
 
-log("v17 loaded | mobile="..tostring(isMobile).." | keyValid="..tostring(keyValid))
+log("v18 loaded | settings file: "..SETTINGS_FILE.." | target: $"..fmtVal(Settings.targetValue))
