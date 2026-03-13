@@ -1,5 +1,5 @@
 local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
-local MIN_VALUE_MPS = 30e6    -- report servers with brainrots >= this (30M)
+local MIN_VALUE_MPS = 1e3    -- report servers with brainrots >= this (30M)
 local MIN_PLAYERS   = 3       -- skip servers with fewer players
 -- ============================================================
 
