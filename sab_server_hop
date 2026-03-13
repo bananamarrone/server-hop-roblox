@@ -2,7 +2,6 @@
 -- Settings saved to workspace folder so they persist between hops.
 -- Teleport: TeleportService:Teleport(PlaceId, player)  [confirmed working]
 -- Scan:     AnimalOverhead -> Generation -> $ parser    [confirmed working]
--- Key system, blacklist, whitelist, force hop, full mobile support.
 -- No +=  No *=  No block comments
 
 -- ============================================================
@@ -177,10 +176,8 @@ end
 local hunting=false
 local hopCount=0
 
--- fetch a random server job ID that is NOT the current server
 local function getRandomJobId()
     local curJob=game.JobId
-    -- grab up to 3 pages of servers, pick a random one that isn't current
     local ids={}
     local cursor=""
     for _=1,3 do
@@ -212,7 +209,6 @@ local function doHop()
         log("Teleporting to job "..jobId:sub(1,16).."...")
         pcall(function() TeleportService:TeleportToPlaceInstance(PlaceId,jobId,LP) end)
     else
-        -- fallback: no server list available, use random
         log("No server list, falling back to random Teleport()")
         pcall(function() TeleportService:Teleport(PlaceId,LP) end)
     end
@@ -223,15 +219,41 @@ end
 -- ═══════════════════════════════════════════════════════════════════════
 -- GUI
 -- ═══════════════════════════════════════════════════════════════════════
-local CW=isMobile and 310 or 292
+
+local function mkDiv(parent,y)
+    local d=Instance.new("Frame",parent)
+    d.Size=U2(1,-24,0,1)
+    d.Position=U2(0,12,0,y)
+    d.BackgroundColor3=C3(18,28,44)
+    d.BorderSizePixel=0
+    return d
+end
+
+local function mkBtn(parent,text,y,r,g,b,h,cr,cg,cb)
+    local btt=Instance.new("TextButton",parent)
+    btt.Size=U2(1,-24,0,h)
+    btt.Position=U2(0,12,0,y)
+    btt.BackgroundColor3=C3(r,g,b)
+    btt.BorderSizePixel=0
+    btt.Font=Enum.Font.GothamBold
+    btt.TextSize=13
+    btt.Text=text
+    btt.TextColor3=C3(cr,cg,cb)
+    btt.AutoButtonColor=false
+    Instance.new("UICorner",btt).CornerRadius=UDim.new(0,10)
+    return btt
+end
 
 -- MAIN GUI
+local CW=isMobile and 310 or 292
+
 local CARD_H=440
 local SG=Instance.new("ScreenGui")
 MainSG=SG
 SG.Name="BSH_Main"; SG.DisplayOrder=1000
 SG.ResetOnSpawn=false; SG.IgnoreGuiInset=true
-SG.Enabled=keyValid; SG.Parent=CoreGui
+SG.Enabled=true  -- key system removed
+SG.Parent=CoreGui
 
 local Glow=Instance.new("Frame",SG)
 Glow.Size=U2(0,CW+16,0,CARD_H+16); Glow.Position=U2(0,22,0,22)
@@ -607,11 +629,9 @@ end)
 
 log("v18 loaded | settings file: "..SETTINGS_FILE.." | target: $"..fmtVal(Settings.targetValue))
 
--- auto-resume hunting if we were hunting before the last teleport
 if Settings.wasHunting then
     log("wasHunting=true in settings, auto-starting hunt...")
     task.delay(1, function()
-        -- small delay so GUI finishes rendering first
         startHunt()
     end)
 end
