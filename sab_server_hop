@@ -25,7 +25,7 @@ local SoundService     = game:GetService("SoundService")
 local LP      = Players.LocalPlayer
 local PlaceId = game.PlaceId
 
-local C3 = Color3.fromRGB
+local C3 = Color3.fromRGB  
 local U2 = UDim2.new
 local TI = TweenInfo.new
 
@@ -152,26 +152,6 @@ local function scanBest()
     end
     return bestVal,bestName,bestRaw
 end
-
--- ── KEY SYSTEM ────────────────────────────────────────────────────────────────
-local KEY_FILE="BSH_key.json"
-local function todayStr() return os.date("!%Y-%m-%d") end
-local keyValid=false
-local function loadKeyCache()
-    local raw=safeRead(KEY_FILE); if not raw then return end
-    local ok,d=pcall(function() return HttpService:JSONDecode(raw) end)
-    if ok and type(d)=="table" and d.date==todayStr() and d.valid==true then keyValid=true end
-end
-local function saveKeyCache()
-    local ok,enc=pcall(function() return HttpService:JSONEncode({date=todayStr(),valid=true}) end)
-    if ok then safeWrite(KEY_FILE,enc) end
-end
-local function fetchTodayKey()
-    local ok,res=pcall(function() return game:HttpGet(KEY_PASTEBIN) end)
-    if not ok or not res then return nil end
-    return res:match("^%s*(.-)%s*$")
-end
-loadKeyCache()
 
 -- ── AUTO-EXECUTE ──────────────────────────────────────────────────────────────
 local SCRIPT_FILE="BSH_v18.lua"
