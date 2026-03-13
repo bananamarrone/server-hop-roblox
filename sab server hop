@@ -1,3 +1,13 @@
+-- BANANA SERVER HOP v18
+-- Settings saved to workspace folder so they persist between hops.
+-- Teleport: TeleportService:Teleport(PlaceId, player)  [confirmed working]
+-- Scan:     AnimalOverhead -> Generation -> $ parser    [confirmed working]
+-- Key system, blacklist, whitelist, force hop, full mobile support.
+-- No +=  No *=  No block comments
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
 local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
 local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
 local SETTINGS_FILE = "BSH_settings.json"   -- saved in executor workspace folder
@@ -46,6 +56,7 @@ local Settings = {
     targetValue = 30e6,
     blacklist   = {},
     whitelist   = {},
+    wasHunting  = false,
 }
 
 local function loadSettings()
@@ -56,9 +67,10 @@ local function loadSettings()
     if type(d.targetValue)=="number" and d.targetValue>0 then
         Settings.targetValue = d.targetValue
     end
-    if type(d.blacklist)=="table" then Settings.blacklist = d.blacklist end
-    if type(d.whitelist)=="table" then Settings.whitelist = d.whitelist end
-    log("Settings loaded: target=$"..tostring(Settings.targetValue/1e6).."m  bl="..#Settings.blacklist.."  wl="..#Settings.whitelist)
+    if type(d.blacklist)=="table"    then Settings.blacklist   = d.blacklist   end
+    if type(d.whitelist)=="table"    then Settings.whitelist   = d.whitelist   end
+    if type(d.wasHunting)=="boolean" then Settings.wasHunting  = d.wasHunting  end
+    log("Settings loaded: target=$"..tostring(Settings.targetValue/1e6).."m  wasHunting="..tostring(Settings.wasHunting))
 end
 
 local function saveSettings()
@@ -584,6 +596,7 @@ local function isWanted(name)
 end
 local function stopHunt()
     hunting=false
+    Settings.wasHunting=false; saveSettings()
     StartBtn.Text="START HUNTING"; StartBtn.TextColor3=C3(0,8,6)
     BtnG.Color=ColorSequence.new({
         ColorSequenceKeypoint.new(0,C3(0,230,160)),ColorSequenceKeypoint.new(1,C3(0,190,255))})
@@ -597,6 +610,7 @@ local function startHunt()
         task.delay(1.2,function() IStroke.Color=C3(0,150,90) end); return
     end
     hunting=true
+    Settings.wasHunting=true; saveSettings()
     StartBtn.Text="STOP"; StartBtn.TextColor3=C3(255,200,200)
     BtnG.Color=ColorSequence.new({
         ColorSequenceKeypoint.new(0,C3(220,40,40)),ColorSequenceKeypoint.new(1,C3(160,20,70))})
@@ -665,3 +679,12 @@ task.spawn(function()
 end)
 
 log("v18 loaded | settings file: "..SETTINGS_FILE.." | target: $"..fmtVal(Settings.targetValue))
+
+-- auto-resume hunting if we were hunting before the last teleport
+if Settings.wasHunting then
+    log("wasHunting=true in settings, auto-starting hunt...")
+    task.delay(1, function()
+        -- small delay so GUI finishes rendering first
+        startHunt()
+    end)
+end
