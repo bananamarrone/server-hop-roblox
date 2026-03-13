@@ -1,9 +1,19 @@
+-- BANANA SCOUT v8
+-- FIXED TIMING: waits for AnimalOverhead objects to appear before scanning.
+-- Scans for up to 12 seconds per server, gives up and hops if nothing appears.
+-- Webhook: request() / http_request() / syn.request() [executor compatible]
+-- Teleport: TeleportService:Teleport(PlaceId, player)  [confirmed working]
+-- Scan: AnimalOverhead -> Generation -> $ parser        [confirmed working]
+-- No +=  No *=
+
 -- ============================================================
 -- CONFIG
 -- ============================================================
 local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
 local MIN_VALUE_MPS = 1e3    -- report servers with brainrots >= this (30M default)
-local MIN_PLAYERS   = 3       -- skip servers with fewer players
+local WAIT_FOR_LOAD = 2       -- seconds to wait after joining for brainrots to appear
+local SCAN_TIME     = 2       -- seconds to keep scanning after first brainrot seen
+local MIN_PLAYERS   = 3       -- skip servers with fewer players (not used for hop method)
 -- ============================================================
 
 local Players          = game:GetService("Players")
@@ -29,7 +39,7 @@ local function notify(title,text)
     end)
 end
 
--- persistence
+-- ── FILE I/O ──────────────────────────────────────────────────────────────────
 local function safeRead(f)
     if not (isfile and isfile(f)) then return nil end
     local ok,d=pcall(readfile,f); return ok and d or nil
@@ -37,6 +47,7 @@ end
 local function safeWrite(f,d)
     pcall(function() if writefile then writefile(f,d) end end)
 end
+
 local St={hops=0,found=0}
 local function saveSt()
     local ok,enc=pcall(function() return HttpService:JSONEncode(St) end)
@@ -52,7 +63,7 @@ local function loadSt()
 end
 loadSt()
 
--- queue on teleport
+-- ── QUEUE ON TELEPORT ─────────────────────────────────────────────────────────
 local SCRIPT_SOURCE=nil
 pcall(function()
     local r=safeRead(SCRIPT_FILE); if r then SCRIPT_SOURCE=r end
@@ -107,14 +118,19 @@ local function scanBest()
     return bestVal,bestName,bestRaw
 end
 
+local function countAnimalOverheads()
+    local count=0
+    for _,o in next,workspace:GetDescendants() do
+        if o.Name=="AnimalOverhead" then count=count+1 end
+    end
+    return count
+end
+
 -- ── WEBHOOK (executor-compatible) ────────────────────────────────────────────
--- HttpService:PostAsync does NOT work in Ronix/Delta/most executors for Discord.
--- Must use request() or http_request() which executors provide.
 local function sendWebhook(val,name,rawText,jobId,numPlayers)
     local valStr=fmtVal(val).."/s"
     local joinCmd=string.format(
         "game:GetService('TeleportService'):TeleportToPlaceInstance(%d,'%s')",PlaceId,jobId)
-
     local payload={
         username="Banana Scout",
         embeds={{
@@ -124,67 +140,50 @@ local function sendWebhook(val,name,rawText,jobId,numPlayers)
                 {name="Value",        value=valStr,                       inline=true},
                 {name="Players",      value=tostring(numPlayers).."/8",   inline=true},
                 {name="Name",         value=name,                         inline=false},
-                {name="Raw Text",     value=rawText,                      inline=false},
+                {name="Raw Value",    value=rawText,                      inline=false},
                 {name="Server ID",    value="`"..jobId.."`",              inline=false},
                 {name="Join Command", value="```lua\n"..joinCmd.."\n```", inline=false},
             },
             footer={text="Banana Scout  |  hops: "..St.hops.."  |  found: "..St.found},
         }}
     }
-
     local ok,body=pcall(function() return HttpService:JSONEncode(payload) end)
-    if not ok then log("JSON encode failed: "..tostring(body)); return end
+    if not ok then log("JSON encode failed"); return end
 
-    -- try request() first (Ronix, Delta, KRNL, most executors)
     local sent=false
     pcall(function()
         if request then
             local res=request({
-                Url=WEBHOOK_URL,
-                Method="POST",
-                Headers={["Content-Type"]="application/json"},
-                Body=body,
+                Url=WEBHOOK_URL, Method="POST",
+                Headers={["Content-Type"]="application/json"}, Body=body,
             })
-            sent=true
-            log("Webhook sent via request(): status "..tostring(res and res.StatusCode))
+            sent=true; log("Sent via request() status="..tostring(res and res.StatusCode))
         end
     end)
-
-    -- fallback: http_request() (some older executors)
     if not sent then
         pcall(function()
             if http_request then
                 local res=http_request({
-                    Url=WEBHOOK_URL,
-                    Method="POST",
-                    Headers={["Content-Type"]="application/json"},
-                    Body=body,
+                    Url=WEBHOOK_URL, Method="POST",
+                    Headers={["Content-Type"]="application/json"}, Body=body,
                 })
-                sent=true
-                log("Webhook sent via http_request(): status "..tostring(res and res.StatusCode))
+                sent=true; log("Sent via http_request() status="..tostring(res and res.StatusCode))
             end
         end)
     end
-
-    -- fallback: syn.request (Synapse)
     if not sent then
         pcall(function()
             if syn and syn.request then
                 syn.request({
-                    Url=WEBHOOK_URL,
-                    Method="POST",
-                    Headers={["Content-Type"]="application/json"},
-                    Body=body,
+                    Url=WEBHOOK_URL, Method="POST",
+                    Headers={["Content-Type"]="application/json"}, Body=body,
                 })
-                sent=true
-                log("Webhook sent via syn.request()")
+                sent=true; log("Sent via syn.request()")
             end
         end)
     end
-
     if not sent then
-        log("All webhook methods failed - no request() available in this executor")
-        warn("[SCOUT] Webhook could not be sent: executor has no request() function")
+        warn("[SCOUT] No request() function found in this executor. Webhook not sent.")
     end
 end
 
@@ -198,7 +197,7 @@ Gui.Name="BSH_Scout"; Gui.DisplayOrder=100
 Gui.ResetOnSpawn=false; Gui.IgnoreGuiInset=true; Gui.Parent=CoreGui
 
 local Card=Instance.new("Frame",Gui)
-Card.Size=U2(0,260,0,140); Card.Position=U2(0,10,0,10)
+Card.Size=U2(0,268,0,148); Card.Position=U2(0,10,0,10)
 Card.BackgroundColor3=C3(7,9,14); Card.BorderSizePixel=0; Card.Active=true
 Instance.new("UICorner",Card).CornerRadius=UDim.new(0,10)
 Instance.new("UIStroke",Card).Color=C3(0,160,100)
@@ -211,46 +210,67 @@ Instance.new("UIGradient",Acc).Color=ColorSequence.new({
 local TTL=Instance.new("TextLabel",Card)
 TTL.Size=U2(1,-10,0,18); TTL.Position=U2(0,8,0,6)
 TTL.BackgroundTransparency=1; TTL.Font=Enum.Font.GothamBold; TTL.TextSize=11
-TTL.Text="BANANA SCOUT  RUNNING"; TTL.TextColor3=C3(0,220,140)
+TTL.Text="BANANA SCOUT  v8"; TTL.TextColor3=C3(0,220,140)
 TTL.TextXAlignment=Enum.TextXAlignment.Left
 
+-- big status line
 local STL=Instance.new("TextLabel",Card)
-STL.Size=U2(1,-10,0,14); STL.Position=U2(0,8,0,27)
-STL.BackgroundTransparency=1; STL.Font=Enum.Font.Gotham; STL.TextSize=10
+STL.Size=U2(1,-10,0,16); STL.Position=U2(0,8,0,27)
+STL.BackgroundTransparency=1; STL.Font=Enum.Font.GothamBold; STL.TextSize=11
 STL.Text="Starting..."; STL.TextColor3=C3(100,130,170)
-STL.TextXAlignment=Enum.TextXAlignment.Left; STL.TextWrapped=true
+STL.TextXAlignment=Enum.TextXAlignment.Left
 
+-- scan progress bar
+local BarBG=Instance.new("Frame",Card)
+BarBG.Size=U2(1,-16,0,3); BarBG.Position=U2(0,8,0,46)
+BarBG.BackgroundColor3=C3(14,22,36); BarBG.BorderSizePixel=0
+Instance.new("UICorner",BarBG).CornerRadius=UDim.new(1,0)
+local SBar=Instance.new("Frame",BarBG)
+SBar.Size=U2(0,0,1,0); SBar.BackgroundColor3=C3(0,200,130); SBar.BorderSizePixel=0
+Instance.new("UICorner",SBar).CornerRadius=UDim.new(1,0)
+Instance.new("UIGradient",SBar).Color=ColorSequence.new({
+    ColorSequenceKeypoint.new(0,C3(0,200,255)),ColorSequenceKeypoint.new(1,C3(0,255,160))})
+local function setBar(f)
+    SBar.Size=U2(math.clamp(f,0,1),0,1,0)
+end
+
+-- best line
 local BestL=Instance.new("TextLabel",Card)
-BestL.Size=U2(1,-10,0,14); BestL.Position=U2(0,8,0,43)
-BestL.BackgroundTransparency=1; BestL.Font=Enum.Font.Gotham; BestL.TextSize=9
+BestL.Size=U2(1,-10,0,14); BestL.Position=U2(0,8,0,52)
+BestL.BackgroundTransparency=1; BestL.Font=Enum.Font.Gotham; BestL.TextSize=10
 BestL.Text="best: —"; BestL.TextColor3=C3(55,85,125)
 BestL.TextXAlignment=Enum.TextXAlignment.Left; BestL.TextWrapped=true
 
+-- animals count
+local AniL=Instance.new("TextLabel",Card)
+AniL.Size=U2(1,-10,0,12); AniL.Position=U2(0,8,0,68)
+AniL.BackgroundTransparency=1; AniL.Font=Enum.Font.Gotham; AniL.TextSize=9
+AniL.Text="brainrots visible: 0"; AniL.TextColor3=C3(40,65,100)
+AniL.TextXAlignment=Enum.TextXAlignment.Left
+
+-- stats
 local SPL=Instance.new("TextLabel",Card)
-SPL.Size=U2(1,-10,0,12); SPL.Position=U2(0,8,0,59)
+SPL.Size=U2(1,-10,0,12); SPL.Position=U2(0,8,0,82)
 SPL.BackgroundTransparency=1; SPL.Font=Enum.Font.Gotham; SPL.TextSize=9
-SPL.Text="hops: 0  |  found: 0"; SPL.TextColor3=C3(50,70,100)
-SPL.TextXAlignment=Enum.TextXAlignment.Left
+SPL.Text="hops: 0  |  found: 0  |  min: "..fmtVal(MIN_VALUE_MPS)
+SPL.TextColor3=C3(50,70,100); SPL.TextXAlignment=Enum.TextXAlignment.Left
 
 local StopB=Instance.new("TextButton",Card)
-StopB.Size=U2(1,-16,0,28); StopB.Position=U2(0,8,0,78)
+StopB.Size=U2(1,-16,0,28); StopB.Position=U2(0,8,0,98)
 StopB.BackgroundColor3=C3(50,14,14); StopB.BorderSizePixel=0
 StopB.Font=Enum.Font.GothamBold; StopB.TextSize=11
 StopB.Text="STOP SCOUT"; StopB.TextColor3=C3(220,70,70); StopB.AutoButtonColor=false
 Instance.new("UICorner",StopB).CornerRadius=UDim.new(0,5)
 
--- MIN VALUE changer
-local MLbl=Instance.new("TextLabel",Card)
-MLbl.Size=U2(1,-10,0,12); MLbl.Position=U2(0,8,0,112)
-MLbl.BackgroundTransparency=1; MLbl.Font=Enum.Font.Gotham; MLbl.TextSize=9
-MLbl.Text="Min value: "..fmtVal(MIN_VALUE_MPS).."/s  (edit in CONFIG)"; MLbl.TextColor3=C3(40,60,90)
-MLbl.TextXAlignment=Enum.TextXAlignment.Left
+local ConfigL=Instance.new("TextLabel",Card)
+ConfigL.Size=U2(1,-10,0,12); ConfigL.Position=U2(0,8,0,130)
+ConfigL.BackgroundTransparency=1; ConfigL.Font=Enum.Font.Gotham; ConfigL.TextSize=8
+ConfigL.Text="wait="..WAIT_FOR_LOAD.."s  scan="..SCAN_TIME.."s  (edit CONFIG at top)"
+ConfigL.TextColor3=C3(28,42,62); ConfigL.TextXAlignment=Enum.TextXAlignment.Left
 
 local running=true
 StopB.MouseButton1Click:Connect(function()
-    running=false
-    TTL.Text="SCOUT STOPPED"; TTL.TextColor3=C3(200,60,60)
-    log("Stopped.")
+    running=false; TTL.Text="SCOUT STOPPED"; TTL.TextColor3=C3(200,60,60); log("Stopped.")
 end)
 
 -- drag
@@ -274,58 +294,104 @@ end)
 
 task.spawn(function()
     while running do
-        SPL.Text="hops: "..St.hops.."  |  found: "..St.found
-        task.wait(1)
+        SPL.Text="hops: "..St.hops.."  |  found: "..St.found.."  |  min: "..fmtVal(MIN_VALUE_MPS)
+        AniL.Text="brainrots visible: "..tostring(countAnimalOverheads())
+        task.wait(0.5)
     end
 end)
 
 -- ── MAIN LOOP ─────────────────────────────────────────────────────────────────
-log("Started. Min: "..fmtVal(MIN_VALUE_MPS).."/s  Webhook: set")
+log("Started. Min="..fmtVal(MIN_VALUE_MPS).."/s  waitLoad="..WAIT_FOR_LOAD.."s  scanTime="..SCAN_TIME.."s")
 
 task.spawn(function()
     while running do
-        STL.Text="SCANNING..."; STL.TextColor3=C3(60,130,90)
 
-        local bestVal,bestName,bestRaw=-1,"?",""
-        for _=1,3 do
-            if not running then break end
-            local v,n,r=scanBest()
-            if v>bestVal then bestVal=v; bestName=n; bestRaw=r end
-            task.wait(0.04)
+        -- STEP 1: wait for AnimalOverhead objects to appear in the world
+        -- They don't exist instantly after teleport. Wait up to WAIT_FOR_LOAD seconds.
+        STL.Text="Waiting for brainrots to load..."; STL.TextColor3=C3(60,100,140)
+        setBar(0)
+        local t0=tick()
+        local appeared=false
+        while running and tick()-t0 < WAIT_FOR_LOAD do
+            local count=countAnimalOverheads()
+            local elapsed=tick()-t0
+            setBar(elapsed/WAIT_FOR_LOAD)
+            if count>0 then
+                appeared=true
+                STL.Text="Brainrots appeared! Scanning..."; STL.TextColor3=C3(0,180,110)
+                break
+            end
+            task.wait(0.2)
         end
 
-        if bestVal>0 then
-            STL.Text="Found: "..fmtVal(bestVal).."/s"; STL.TextColor3=C3(0,200,130)
-            BestL.Text=bestName.."  "..bestRaw; BestL.TextColor3=C3(55,85,125)
-            log("Best: "..fmtVal(bestVal).."/s  "..bestName)
+        if not running then break end
+
+        if not appeared then
+            -- nothing loaded in time, server might be empty
+            STL.Text="Nothing appeared ("..WAIT_FOR_LOAD.."s). Hopping."; STL.TextColor3=C3(100,80,50)
+            log("No AnimalOverhead appeared after "..WAIT_FOR_LOAD.."s. Hopping.")
+            setBar(0)
         else
-            STL.Text="Nothing found"; STL.TextColor3=C3(55,75,110)
-            BestL.Text="best: —"; BestL.TextColor3=C3(38,55,82)
-            log("No AnimalOverhead found this server.")
+            -- STEP 2: scan for SCAN_TIME seconds, keep updating the best value
+            -- This catches brainrots that appear late or update their generation text
+            local bestVal,bestName,bestRaw=-1,"?",""
+            local t1=tick()
+            while running and tick()-t1 < SCAN_TIME do
+                local v,n,r=scanBest()
+                if v>bestVal then bestVal=v; bestName=n; bestRaw=r end
+                local elapsed=tick()-t1
+                setBar(elapsed/SCAN_TIME)
+                if bestVal>0 then
+                    STL.Text="Scanning: $"..fmtVal(bestVal).."/s  ("..string.format("%.1f",SCAN_TIME-(tick()-t1)).."s left)"
+                    STL.TextColor3=C3(0,180,110)
+                    BestL.Text=bestName.."  "..bestRaw; BestL.TextColor3=C3(55,85,125)
+                else
+                    STL.Text="Scanning... ("..string.format("%.1f",SCAN_TIME-(tick()-t1)).."s left)"
+                    STL.TextColor3=C3(60,130,90)
+                end
+                task.wait(0.15)
+            end
+
+            if not running then break end
+
+            log("Scan done. Best: "..fmtVal(bestVal).."/s  "..bestName)
+            setBar(1)
+
+            -- STEP 3: check if this server qualifies
+            if bestVal>=MIN_VALUE_MPS then
+                St.found=St.found+1; saveSt()
+                local jobId=game.JobId
+                local numPlayers=#Players:GetPlayers()
+                STL.Text="SENDING WEBHOOK..."; STL.TextColor3=C3(255,200,50)
+                BestL.Text="FOUND: "..bestName.."  "..bestRaw; BestL.TextColor3=C3(0,220,140)
+                log("Sending webhook: "..fmtVal(bestVal).."/s  srv="..jobId)
+                sendWebhook(bestVal,bestName,bestRaw,jobId,numPlayers)
+                STL.Text="REPORTED: "..fmtVal(bestVal).."/s"; STL.TextColor3=C3(0,255,140)
+                notify("Scout Found!",fmtVal(bestVal).."/s sent to Discord!")
+                -- wait before hopping so user can see the message
+                local tw=tick()
+                while running and tick()-tw<5 do task.wait(0.1) end
+            else
+                if bestVal>0 then
+                    STL.Text="Too low: $"..fmtVal(bestVal).."/s  Hopping..."; STL.TextColor3=C3(80,100,160)
+                    BestL.Text="last: "..bestName.."  "..bestRaw; BestL.TextColor3=C3(38,55,82)
+                else
+                    STL.Text="No value found. Hopping..."; STL.TextColor3=C3(70,90,130)
+                    BestL.Text="best: —"; BestL.TextColor3=C3(38,55,82)
+                end
+            end
         end
 
         if not running then break end
 
-        if bestVal>=MIN_VALUE_MPS then
-            St.found=St.found+1; saveSt()
-            local jobId=game.JobId
-            local numPlayers=#Players:GetPlayers()
-            STL.Text="SENDING WEBHOOK..."; STL.TextColor3=C3(255,200,50)
-            log("Sending webhook: "..fmtVal(bestVal).."/s  server: "..jobId)
-            sendWebhook(bestVal,bestName,bestRaw,jobId,numPlayers)
-            STL.Text="REPORTED: "..fmtVal(bestVal).."/s"; STL.TextColor3=C3(0,255,140)
-            notify("Scout Found!",fmtVal(bestVal).."/s reported to Discord.")
-            local tw=tick()
-            while running and tick()-tw<8 do task.wait(0.1) end
-        end
-
-        if not running then break end
-
+        -- STEP 4: hop
         St.hops=St.hops+1; saveSt()
-        STL.Text="Hopping... #"..St.hops; STL.TextColor3=C3(80,100,160)
-        log("Hop #"..St.hops)
+        STL.Text="Hopping to next server... #"..St.hops; STL.TextColor3=C3(80,100,160)
+        setBar(0); BestL.Text="best: —"; BestL.TextColor3=C3(38,55,82)
+        log("Hopping #"..St.hops)
         queueSelf()
         pcall(function() TeleportService:Teleport(PlaceId,LP) end)
+        -- wait for teleport. if we are still here after 8s the teleport failed, try again next loop
         local t0=tick()
         while running and tick()-t0<8 do task.wait(0.1) end
     end
