@@ -1,13 +1,4 @@
--- BANANA SERVER HOP v18
--- Settings saved to workspace folder so they persist between hops.
--- Teleport: TeleportService:Teleport(PlaceId, player)  [confirmed working]
--- Scan:     AnimalOverhead -> Generation -> $ parser    [confirmed working]
--- Key system, blacklist, whitelist, force hop, full mobile support.
--- No +=  No *=  No block comments
-
--- ============================================================
 -- CONFIG
--- ============================================================
 local KEY_PASTEBIN  = "https://pastebin.com/raw/f52nCVwH"
 local WORK_INK_URL  = "https://work.ink/2mMg/banana-serverhop-key"
 local SETTINGS_FILE = "BSH_settings.json"   -- saved in executor workspace folder
