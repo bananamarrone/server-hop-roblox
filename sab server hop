@@ -1,192 +1,86 @@
--- BANANA SERVER HOP v13 (fixed: stop button now works instantly)
--- No +=, no *=, no block comments. Works on Ronix, Delta, KRNL, Synapse, Fluxus.
--- Instant hop: retries up to 3 servers, 8s timeout per attempt.
--- Scan uses AnimalOverhead -> parent.parent BasePart pattern + Mutation support.
-
-local Players          = game:GetService("Players")
-local TeleportService  = game:GetService("TeleportService")
-local UserInputService = game:GetService("UserInputService")
-local HttpService      = game:GetService("HttpService")
-local TweenService     = game:GetService("TweenService")
-local SoundService     = game:GetService("SoundService")
-local CoreGui          = game:GetService("CoreGui")
+local MIN_VALUE_MPS = 30e6   -- stop when brainrot >= this (default 30M/s)
+local MIN_PLAYERS   = 3      -- skip servers with fewer players than this
+local SCAN_WINDOW   = 1.5    -- seconds to scan each server before hopping
+local Players         = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService     = game:GetService("HttpService")
+local UserInputService= game:GetService("UserInputService")
+local TweenService    = game:GetService("TweenService")
+local CoreGui         = game:GetService("CoreGui")
 
 local LP      = Players.LocalPlayer
 local PlaceId = game.PlaceId
 
-local SAVE_FILE   = "BSH_state.json"
-local KEY_FILE    = "BSH_key.json"
-local SCRIPT_FILE = "BSH_v12.lua"
-
-local KEY_PASTEBIN = "https://pastebin.com/raw/f52nCVwH"
-local WORK_INK_URL = "https://work.ink/2mMg/banana-serverhop-key"
-
-local MIN_PLAYERS  = 3
-local SCAN_WINDOW  = 1.2
-local ALERT_ID     = "rbxassetid://4590662766"
+local C3 = Color3.fromRGB
+local U2 = UDim2.new
 
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 for _, v in ipairs(CoreGui:GetChildren()) do
-    if type(v.Name) == "string" and v.Name:sub(1, 4) == "BSH_" then v:Destroy() end
+    if type(v.Name) == "string" and v.Name:sub(1,4) == "BSH_" then v:Destroy() end
 end
 
-local C3 = Color3.fromRGB
-local U2 = UDim2.new
-local TI = TweenInfo.new
+local function log(msg) print("[HOP] " .. tostring(msg)) end
 
-local function parseValue(raw)
-    if not raw or raw == "" then return 0 end
-    local t = raw:gsub("^%s*%$?%s*", ""):lower():gsub("%s+", "")
-    if t == "" then return 0 end
-    local n, s = t:match("^([%d%.]+)([kmbt]?)$")
-    n = tonumber(n)
-    if not n then return 0 end
-    if     s == "k" then n = n * 1e3
-    elseif s == "m" then n = n * 1e6
-    elseif s == "b" then n = n * 1e9
-    elseif s == "t" then n = n * 1e12 end
+local function dismissPopups()
+    pcall(function()
+        for _, obj in ipairs(CoreGui:GetDescendants()) do
+            if obj:IsA("TextButton") then
+                local t = obj.Text:lower()
+                if t == "ok" or t == "okay" or t == "leave" then
+                    pcall(function() obj.MouseButton1Click:Fire() end)
+                end
+            end
+        end
+    end)
+end
+
+local function num(t)
+    if not t or t == "" then return 0 end
+    local n, s = t:match("%$([%d%.]+)%s*([kKmMbBtT]?)")
+    n = tonumber(n) or 0
+    if s then
+        s = s:lower()
+        if     s == "k" then n = n * 1e3
+        elseif s == "m" then n = n * 1e6
+        elseif s == "b" then n = n * 1e9
+        elseif s == "t" then n = n * 1e12 end
+    end
     return n
 end
 
 local function fmtVal(n)
     if not n or n <= 0 then return "0" end
-    if     n >= 1e12 then return string.format("%.2fT", n / 1e12)
-    elseif n >= 1e9  then return string.format("%.2fB", n / 1e9)
-    elseif n >= 1e6  then return string.format("%.2fM", n / 1e6)
-    elseif n >= 1e3  then return string.format("%.1fK", n / 1e3)
+    if     n >= 1e12 then return string.format("%.2fT", n/1e12)
+    elseif n >= 1e9  then return string.format("%.2fB", n/1e9)
+    elseif n >= 1e6  then return string.format("%.2fM", n/1e6)
+    elseif n >= 1e3  then return string.format("%.1fK", n/1e3)
     else return tostring(math.floor(n)) end
 end
 
-local function valToInput(n)
-    if not n or n <= 0 then return "" end
-    if     n >= 1e12 then return string.format("%.2fT", n / 1e12):gsub("%.00", "")
-    elseif n >= 1e9  then return string.format("%.2fB", n / 1e9):gsub("%.00", "")
-    elseif n >= 1e6  then return string.format("%.2fM", n / 1e6):gsub("%.00", "")
-    elseif n >= 1e3  then return string.format("%.1fK", n / 1e3):gsub("%.0", "")
-    else return tostring(math.floor(n)) end
-end
-
-local function strContains(a, b)
-    if not a or not b or b == "" then return false end
-    return a:lower():find(b:lower(), 1, true) ~= nil
-end
-
-local function todayStr() return os.date("!%Y-%m-%d") end
-
-local function safeRead(f)
-    if not (isfile and isfile(f)) then return nil end
-    local ok, d = pcall(readfile, f); return ok and d or nil
-end
-local function safeWrite(f, d)
-    pcall(function() if writefile then writefile(f, d) end end)
-end
-
-local DEFAULTS = {
-    hunting=false, targetValue=0, hopCount=0, hopAnyway=false,
-    keybind="RightBracket", stopKeybind="F", blacklist={}, whitelist={},
-}
-local S = {}
-for k, v in pairs(DEFAULTS) do S[k] = v end
-
-local function saveState()
-    local ok, enc = pcall(function() return HttpService:JSONEncode(S) end)
-    if ok then safeWrite(SAVE_FILE, enc) end
-end
-local function loadState()
-    local raw = safeRead(SAVE_FILE); if not raw then return end
-    local ok, d = pcall(function() return HttpService:JSONDecode(raw) end)
-    if not ok or type(d) ~= "table" then return end
-    for k, def in pairs(DEFAULTS) do
-        if d[k] ~= nil and type(d[k]) == type(def) then S[k] = d[k] end
+local function findBest()
+    local bestV, bestN, bestM, bestR = -1, "?", "", ""
+    for _, o in ipairs(game:GetService("Workspace"):GetDescendants()) do
+        repeat
+            if o.Name ~= "AnimalOverhead" then break end
+            local p = o.Parent and o.Parent.Parent
+            if not (p and p:IsA("BasePart")) then break end
+            local gen = o:FindFirstChild("Generation")
+            if not gen then break end
+            local val = num(gen.Text)
+            if val <= 0 then break end
+            local dObj = o:FindFirstChild("DisplayName")
+            local name = (dObj and dObj.Text ~= "") and dObj.Text or (o.Parent and o.Parent.Name) or "?"
+            local mObj = o:FindFirstChild("Mutation")
+            local mut = (mObj and mObj.Text ~= "") and mObj.Text or ""
+            if val > bestV then bestV = val; bestN = name; bestM = mut; bestR = gen.Text end
+        until true
     end
-end
-loadState()
-local wasHunting = S.hunting
-S.hunting = false; saveState()
-
-local keyValid = false
-local function loadKeyCache()
-    local raw = safeRead(KEY_FILE); if not raw then return end
-    local ok, d = pcall(function() return HttpService:JSONDecode(raw) end)
-    if ok and type(d) == "table" and d.date == todayStr() and d.valid == true then keyValid = true end
-end
-local function saveKeyCache()
-    local ok, enc = pcall(function() return HttpService:JSONEncode({date=todayStr(), valid=true}) end)
-    if ok then safeWrite(KEY_FILE, enc) end
-end
-local function fetchTodayKey()
-    local ok, res = pcall(function() return game:HttpGet(KEY_PASTEBIN) end)
-    if not ok or not res then return nil end
-    return res:match("^%s*(.-)%s*$")
-end
-loadKeyCache()
-
-local SCRIPT_SOURCE
-pcall(function() local r = safeRead(SCRIPT_FILE); if r then SCRIPT_SOURCE = r end end)
-local function queueSelf()
-    if not SCRIPT_SOURCE then return end
-    pcall(function() if queue_on_teleport then queue_on_teleport(SCRIPT_SOURCE) end end)
-    pcall(function() if syn and syn.queue_on_teleport then syn.queue_on_teleport(SCRIPT_SOURCE) end end)
-    pcall(function() if fluxus and fluxus.queue_on_teleport then fluxus.queue_on_teleport(SCRIPT_SOURCE) end end)
-end
-pcall(function()
-    if writefile and SCRIPT_SOURCE then
-        for _, p in ipairs({"autoexec/"..SCRIPT_FILE, "Autoexec/"..SCRIPT_FILE, "auto-exec/"..SCRIPT_FILE}) do
-            pcall(function() writefile(p, SCRIPT_SOURCE) end)
-        end
-    end
-end)
-
-local NotifGui = Instance.new("ScreenGui")
-NotifGui.Name="BSH_Notif"; NotifGui.DisplayOrder=2000
-NotifGui.ResetOnSpawn=false; NotifGui.IgnoreGuiInset=true; NotifGui.Parent=CoreGui
-local notifList = {}
-local NW = isMobile and 240 or 270
-local NTOP = isMobile and 60 or 16
-
-local function restack()
-    local y = NTOP
-    for _, nf in ipairs(notifList) do
-        if nf and nf.Parent then
-            TweenService:Create(nf, TI(0.15, Enum.EasingStyle.Quart), {Position=U2(1,-NW-12,0,y)}):Play()
-            y = y + (nf.AbsoluteSize.Y > 0 and nf.AbsoluteSize.Y or 54) + 5
-        end
-    end
-end
-local function notify(title, body, kind)
-    local cols = {
-        info   ={bg=C3(12,18,30), border=C3(70,140,255)},
-        success={bg=C3(8,22,16),  border=C3(0,210,130)},
-        warn   ={bg=C3(22,16,6),  border=C3(255,170,30)},
-        error  ={bg=C3(22,8,8),   border=C3(210,50,50)},
-    }
-    local col = cols[kind or "info"]
-    local nf = Instance.new("Frame", NotifGui)
-    nf.Size=U2(0,NW,0,0); nf.Position=U2(1,-NW-12,0,NTOP)
-    nf.BackgroundColor3=col.bg; nf.BorderSizePixel=0; nf.ClipsDescendants=true
-    Instance.new("UICorner",nf).CornerRadius=UDim.new(0,10)
-    local nb=Instance.new("UIStroke",nf); nb.Color=col.border; nb.Thickness=1
-    local bar=Instance.new("Frame",nf); bar.Size=U2(0,3,1,0); bar.BackgroundColor3=col.border; bar.BorderSizePixel=0
-    Instance.new("UICorner",bar).CornerRadius=UDim.new(0,3)
-    local tl=Instance.new("TextLabel",nf); tl.Size=U2(1,-18,0,16); tl.Position=U2(0,12,0,7)
-    tl.BackgroundTransparency=1; tl.Font=Enum.Font.GothamBold; tl.TextSize=10
-    tl.Text=title; tl.TextColor3=C3(220,235,255); tl.TextXAlignment=Enum.TextXAlignment.Left
-    local bl=Instance.new("TextLabel",nf); bl.Size=U2(1,-18,0,26); bl.Position=U2(0,12,0,24)
-    bl.BackgroundTransparency=1; bl.Font=Enum.Font.Gotham; bl.TextSize=9
-    bl.Text=body; bl.TextColor3=C3(120,145,185); bl.TextXAlignment=Enum.TextXAlignment.Left; bl.TextWrapped=true
-    table.insert(notifList, nf); restack()
-    TweenService:Create(nf,TI(0.18,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Size=U2(0,NW,0,54)}):Play()
-    task.delay(4, function()
-        TweenService:Create(nf,TI(0.2),{Size=U2(0,NW,0,0)}):Play()
-        task.wait(0.22)
-        for i, v in ipairs(notifList) do if v==nf then table.remove(notifList,i); break end end
-        pcall(function() nf:Destroy() end); restack()
-    end)
+    return bestV, bestN, bestM, bestR
 end
 
-local serverPool = {}
-local nextCursor = nil
+local serverPool  = {}
+local nextCursor  = nil
 local fetchingPage = false
 
 local function fetchPage(cursor)
@@ -214,16 +108,17 @@ local function refillPool()
             local j = math.random(i); batch[i], batch[j] = batch[j], batch[i]
         end
         for _, sv in ipairs(batch) do table.insert(serverPool, sv) end
-        nextCursor = nc; fetchingPage = false
+        nextCursor = nc
+        fetchingPage = false
         if #serverPool < 50 and nc then refillPool() end
     end)
 end
 
-local function getNextServer()
+local function getNextServer(hunting)
     if #serverPool < 30 and not fetchingPage then refillPool() end
     if #serverPool == 0 then
         local t0 = tick()
-        repeat task.wait(0.05) until not hunting or #serverPool > 0 or tick()-t0 > 4
+        repeat task.wait(0.05) until not hunting or #serverPool > 0 or tick()-t0 > 6
     end
     if #serverPool == 0 then return nil end
     return table.remove(serverPool, 1)
@@ -233,640 +128,394 @@ task.spawn(function()
     for _ = 1, 3 do if not fetchingPage then refillPool() end; task.wait(0.1) end
 end)
 
-local function findBest(blacklist)
-    local bestV, bestN, bestM, bestR = -1, "?", "", ""
-    for _, o in ipairs(game:GetService("Workspace"):GetDescendants()) do
-        repeat
-            if o.Name ~= "AnimalOverhead" then break end
-            local p = o.Parent and o.Parent.Parent
-            if not (p and p:IsA("BasePart")) then break end
-            local gen = o:FindFirstChild("Generation")
-            if not gen then break end
-            local val = parseValue(gen.Text)
-            if val <= 0 then break end
-            local dObj = o:FindFirstChild("DisplayName")
-            local name = (dObj and dObj.Text ~= "") and dObj.Text or (o.Parent and o.Parent.Name) or "?"
-            local mObj = o:FindFirstChild("Mutation")
-            local mut = (mObj and mObj.Text ~= "") and mObj.Text or ""
-            if blacklist then
-                local blocked = false
-                for _, w in ipairs(blacklist) do if strContains(name, w) then blocked=true; break end end
-                if blocked then break end
-            end
-            if val > bestV then bestV=val; bestN=name; bestM=mut; bestR=gen.Text end
-        until true
+local hunting    = false
+local hopCount   = 0
+local foundCount = 0
+
+local SCRIPT_FILE = "BSH_v14.lua"
+local SCRIPT_SOURCE
+pcall(function()
+    if isfile and isfile(SCRIPT_FILE) then
+        local ok, r = pcall(readfile, SCRIPT_FILE)
+        if ok then SCRIPT_SOURCE = r end
     end
-    return bestV, bestN, bestM, bestR
+end)
+local function queueSelf()
+    if not SCRIPT_SOURCE then return end
+    pcall(function() if queue_on_teleport then queue_on_teleport(SCRIPT_SOURCE) end end)
+    pcall(function() if syn and syn.queue_on_teleport then syn.queue_on_teleport(SCRIPT_SOURCE) end end)
+    pcall(function() if fluxus and fluxus.queue_on_teleport then fluxus.queue_on_teleport(SCRIPT_SOURCE) end end)
 end
-
-local function passesWhitelist(name, whitelist)
-    if #whitelist == 0 then return true end
-    for _, w in ipairs(whitelist) do if strContains(name, w) then return true end end
-    return false
-end
-
-local alertSound = Instance.new("Sound", SoundService)
-alertSound.SoundId = ALERT_ID; alertSound.Volume = 1
-local function playAlert() pcall(function() alertSound:Stop(); alertSound:Play() end) end
 
 local LoadGui = Instance.new("ScreenGui")
-LoadGui.Name="BSH_Load"; LoadGui.DisplayOrder=9999; LoadGui.ResetOnSpawn=false
-LoadGui.IgnoreGuiInset=true; LoadGui.Enabled=false; LoadGui.Parent=CoreGui
+LoadGui.Name = "BSH_Load"; LoadGui.DisplayOrder = 9999
+LoadGui.ResetOnSpawn = false; LoadGui.IgnoreGuiInset = true
+LoadGui.Enabled = false; LoadGui.Parent = CoreGui
 local LBG = Instance.new("Frame", LoadGui)
-LBG.Size=U2(1,0,1,0); LBG.BackgroundColor3=C3(4,5,8); LBG.BorderSizePixel=0
-for row=0,8 do for col=0,13 do
-    local d=Instance.new("Frame",LBG); d.Size=U2(0,1,0,1); d.Position=U2(0,col*80+40,0,row*80+40)
-    d.BackgroundColor3=C3(0,255,160); d.BackgroundTransparency=0.9; d.BorderSizePixel=0
-    Instance.new("UICorner",d).CornerRadius=UDim.new(1,0)
-end end
-local LC=Instance.new("Frame",LBG); LC.Size=U2(0,300,0,110); LC.Position=U2(0.5,-150,0.5,-55); LC.BackgroundTransparency=1
-local LTL=Instance.new("TextLabel",LC); LTL.Size=U2(1,0,0,52); LTL.BackgroundTransparency=1
-LTL.Font=Enum.Font.GothamBold; LTL.TextSize=42; LTL.Text="BANANA"; LTL.TextColor3=C3(0,255,160)
-Instance.new("UIGradient",LTL).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,220,255)),ColorSequenceKeypoint.new(0.5,C3(0,255,160)),ColorSequenceKeypoint.new(1,C3(120,80,255))})
-local LSL=Instance.new("TextLabel",LC); LSL.Size=U2(1,0,0,14); LSL.Position=U2(0,0,0,52)
-LSL.BackgroundTransparency=1; LSL.Font=Enum.Font.GothamBold; LSL.TextSize=10; LSL.Text="SERVER HOP"; LSL.TextColor3=C3(80,100,140)
-local LBB=Instance.new("Frame",LC); LBB.Size=U2(1,0,0,3); LBB.Position=U2(0,0,0,74)
-LBB.BackgroundColor3=C3(14,22,36); LBB.BorderSizePixel=0; Instance.new("UICorner",LBB).CornerRadius=UDim.new(1,0)
-local LBar=Instance.new("Frame",LBB); LBar.Size=U2(0,0,1,0); LBar.BackgroundColor3=C3(0,230,150); LBar.BorderSizePixel=0
-Instance.new("UICorner",LBar).CornerRadius=UDim.new(1,0)
-Instance.new("UIGradient",LBar).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,200,255)),ColorSequenceKeypoint.new(1,C3(0,255,160))})
-local LSTL=Instance.new("TextLabel",LC); LSTL.Size=U2(1,0,0,14); LSTL.Position=U2(0,0,0,82)
-LSTL.BackgroundTransparency=1; LSTL.Font=Enum.Font.Gotham; LSTL.TextSize=10; LSTL.Text=""; LSTL.TextColor3=C3(50,70,100)
-local LHL=Instance.new("TextLabel",LC); LHL.Size=U2(1,0,0,12); LHL.Position=U2(0,0,0,98)
-LHL.BackgroundTransparency=1; LHL.Font=Enum.Font.GothamBold; LHL.TextSize=9; LHL.Text=""; LHL.TextColor3=C3(0,160,100)
+LBG.Size = U2(1,0,1,0); LBG.BackgroundColor3 = C3(4,5,8); LBG.BorderSizePixel = 0
+local LC = Instance.new("Frame", LBG)
+LC.Size = U2(0,260,0,80); LC.Position = U2(0.5,-130,0.5,-40); LC.BackgroundTransparency = 1
+local LTL = Instance.new("TextLabel", LC)
+LTL.Size = U2(1,0,0,48); LTL.BackgroundTransparency = 1
+LTL.Font = Enum.Font.GothamBold; LTL.TextSize = 38
+LTL.Text = "BANANA"; LTL.TextColor3 = C3(0,255,160)
+Instance.new("UIGradient", LTL).Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, C3(0,220,255)),
+    ColorSequenceKeypoint.new(0.5, C3(0,255,160)),
+    ColorSequenceKeypoint.new(1, C3(120,80,255))
+})
+local LSub = Instance.new("TextLabel", LC)
+LSub.Size = U2(1,0,0,14); LSub.Position = U2(0,0,0,50)
+LSub.BackgroundTransparency = 1; LSub.Font = Enum.Font.GothamBold
+LSub.TextSize = 10; LSub.Text = "HOPPING..."; LSub.TextColor3 = C3(0,180,110)
+local LHopLbl = Instance.new("TextLabel", LC)
+LHopLbl.Size = U2(1,0,0,14); LHopLbl.Position = U2(0,0,0,64)
+LHopLbl.BackgroundTransparency = 1; LHopLbl.Font = Enum.Font.Gotham
+LHopLbl.TextSize = 9; LHopLbl.Text = ""; LHopLbl.TextColor3 = C3(40,60,90)
 pcall(function() TeleportService:SetTeleportGui(LoadGui) end)
 
-local loadAnim = false
-local function showLoading(hopN)
-    LHL.Text="hop #"..tostring(hopN); LSTL.Text="teleporting..."; loadAnim=true; LoadGui.Enabled=true
-    task.spawn(function()
-        while loadAnim and LoadGui.Enabled do
-            TweenService:Create(LBar,TI(0.4,Enum.EasingStyle.Sine),{Size=U2(1,0,1,0)}):Play()
-            task.wait(0.45); LBar.Size=U2(0,0,1,0); task.wait(0.05)
-        end
-    end)
+local function showLoading(n)
+    LHopLbl.Text = "hop #" .. tostring(n)
+    LoadGui.Enabled = true
 end
 local function hideLoading()
-    loadAnim=false; LoadGui.Enabled=false; LBar.Size=U2(0,0,1,0)
+    LoadGui.Enabled = false
 end
 
-local function makeBasePanel(name, title, acc, w, h)
-    w=w or 284; h=h or 340
-    local sg=Instance.new("ScreenGui"); sg.Name=name; sg.DisplayOrder=1100; sg.ResetOnSpawn=false
-    sg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; sg.Enabled=false; sg.Parent=CoreGui
-    local p=Instance.new("Frame",sg); p.Size=U2(0,w,0,h); p.Position=U2(0.5,-w/2,0.5,-h/2)
-    p.BackgroundColor3=C3(7,9,14); p.BorderSizePixel=0; p.Active=true
-    Instance.new("UICorner",p).CornerRadius=UDim.new(0,14)
-    Instance.new("UIStroke",p).Color=C3(22,34,55)
-    local a=Instance.new("Frame",p); a.Size=U2(1,0,0,2); a.BackgroundColor3=acc; a.BorderSizePixel=0
-    Instance.new("UIGradient",a).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,acc),ColorSequenceKeypoint.new(1,C3(80,60,255))})
-    local hdr=Instance.new("Frame",p); hdr.Size=U2(1,0,0,42); hdr.Position=U2(0,0,0,2); hdr.BackgroundTransparency=1
-    local tl=Instance.new("TextLabel",hdr); tl.Size=U2(1,-50,1,0); tl.Position=U2(0,14,0,0)
-    tl.BackgroundTransparency=1; tl.Font=Enum.Font.GothamBold; tl.TextSize=12
-    tl.Text=title; tl.TextColor3=C3(180,200,230); tl.TextXAlignment=Enum.TextXAlignment.Left
-    local cb=Instance.new("TextButton",hdr); cb.Size=U2(0,26,0,26); cb.Position=U2(1,-36,0.5,-13)
-    cb.BackgroundColor3=C3(40,20,20); cb.BorderSizePixel=0; cb.Font=Enum.Font.GothamBold
-    cb.TextSize=14; cb.Text="X"; cb.TextColor3=C3(200,80,80)
-    Instance.new("UICorner",cb).CornerRadius=UDim.new(0,6)
-    cb.MouseButton1Click:Connect(function() sg.Enabled=false end)
-    local dOn=false; local dOff=Vector2.new()
-    hdr.InputBegan:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
-            dOn=true; dOff=Vector2.new(i.Position.X-p.AbsolutePosition.X,i.Position.Y-p.AbsolutePosition.Y)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(i)
-        if dOn and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
-            p.Position=U2(0,i.Position.X-dOff.X,0,i.Position.Y-dOff.Y)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dOn=false end
-    end)
-    return sg, p
-end
+local SG = Instance.new("ScreenGui")
+SG.Name = "BSH_Main"; SG.DisplayOrder = 1000
+SG.ResetOnSpawn = false; SG.IgnoreGuiInset = true; SG.Parent = CoreGui
 
-local function buildListPanel(name,title,acc,hint,tbl,iBg,iCol,aBg,rBg,rCol)
-    local sg,p=makeBasePanel(name,title,acc)
-    local hl=Instance.new("TextLabel",p); hl.Size=U2(1,-32,0,28); hl.Position=U2(0,16,0,50)
-    hl.BackgroundTransparency=1; hl.Font=Enum.Font.Gotham; hl.TextSize=9; hl.TextWrapped=true
-    hl.Text=hint; hl.TextColor3=acc; hl.TextTransparency=0.3; hl.TextXAlignment=Enum.TextXAlignment.Left
-    local ifrm=Instance.new("Frame",p); ifrm.Size=U2(1,-32,0,34); ifrm.Position=U2(0,16,0,82)
-    ifrm.BackgroundColor3=iBg; ifrm.BorderSizePixel=0
-    Instance.new("UICorner",ifrm).CornerRadius=UDim.new(0,8); Instance.new("UIStroke",ifrm).Color=acc
-    local inp=Instance.new("TextBox",ifrm); inp.Size=U2(1,-68,1,0); inp.Position=U2(0,8,0,0)
-    inp.BackgroundTransparency=1; inp.Font=Enum.Font.Gotham; inp.TextSize=13; inp.Text=""
-    inp.PlaceholderText="type word..."; inp.PlaceholderColor3=C3(50,60,70); inp.TextColor3=iCol
-    inp.ClearTextOnFocus=false; inp.BorderSizePixel=0
-    local add=Instance.new("TextButton",ifrm); add.Size=U2(0,54,0,26); add.Position=U2(1,-60,0.5,-13)
-    add.BackgroundColor3=aBg; add.BorderSizePixel=0; add.Font=Enum.Font.GothamBold; add.TextSize=11; add.Text="ADD"; add.TextColor3=C3(255,255,255)
-    Instance.new("UICorner",add).CornerRadius=UDim.new(0,6)
-    local scroll=Instance.new("ScrollingFrame",p); scroll.Size=U2(1,-32,0,190); scroll.Position=U2(0,16,0,124)
-    scroll.BackgroundColor3=C3(10,14,22); scroll.BorderSizePixel=0
-    scroll.ScrollBarThickness=3; scroll.ScrollBarImageColor3=acc; scroll.CanvasSize=U2(0,0,0,0)
-    Instance.new("UICorner",scroll).CornerRadius=UDim.new(0,8)
-    local ll=Instance.new("UIListLayout",scroll); ll.Padding=UDim.new(0,3); ll.SortOrder=Enum.SortOrder.LayoutOrder
-    local refresh
-    refresh=function()
-        for _,c in ipairs(scroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
-        for i,word in ipairs(tbl) do
-            local row=Instance.new("Frame",scroll); row.Size=U2(1,0,0,28)
-            row.BackgroundColor3=rBg; row.BorderSizePixel=0; row.LayoutOrder=i
-            Instance.new("UICorner",row).CornerRadius=UDim.new(0,6)
-            local wl=Instance.new("TextLabel",row); wl.Size=U2(1,-36,1,0); wl.Position=U2(0,8,0,0)
-            wl.BackgroundTransparency=1; wl.Font=Enum.Font.Gotham; wl.TextSize=12
-            wl.Text=word; wl.TextColor3=rCol; wl.TextXAlignment=Enum.TextXAlignment.Left
-            local del=Instance.new("TextButton",row); del.Size=U2(0,24,0,24); del.Position=U2(1,-28,0.5,-12)
-            del.BackgroundColor3=C3(30,14,14); del.BorderSizePixel=0; del.Font=Enum.Font.GothamBold
-            del.TextSize=11; del.Text="X"; del.TextColor3=acc
-            Instance.new("UICorner",del).CornerRadius=UDim.new(0,5)
-            local idx=i
-            del.MouseButton1Click:Connect(function() table.remove(tbl,idx); saveState(); refresh() end)
-        end
-        scroll.CanvasSize=U2(0,0,0,math.max(0,#tbl*31))
-    end
-    add.MouseButton1Click:Connect(function()
-        local w=inp.Text:match("^%s*(.-)%s*$")
-        if w~="" then table.insert(tbl,w); saveState(); inp.Text=""; refresh() end
-    end)
-    inp.FocusLost:Connect(function(e) if e then add.MouseButton1Click:Fire() end end)
-    return sg,p,refresh
-end
+local CW = isMobile and 300 or 280
+local CH = isMobile and 300 or 280
 
-local blGui,_blP,refreshBL=buildListPanel("BSH_Blacklist","BLACKLIST",C3(220,60,60),
-    "Brainrots with these words will be IGNORED.",
-    S.blacklist,C3(20,10,10),C3(220,180,180),C3(180,40,40),C3(18,10,10),C3(220,110,110))
-local wlGui,_wlP,refreshWL=buildListPanel("BSH_Whitelist","WHITELIST",C3(60,200,120),
-    "ONLY stop on these. Empty = stop on any.",
-    S.whitelist,C3(10,18,14),C3(180,255,200),C3(40,150,80),C3(12,22,15),C3(100,220,140))
+local Card = Instance.new("Frame", SG)
+Card.Name = "Card"
+Card.Size = U2(0, CW, 0, CH)
+Card.Position = isMobile and U2(0.5,-CW/2,0,20) or U2(0,20,0,20)
+Card.BackgroundColor3 = C3(7,9,14); Card.BorderSizePixel = 0
+Card.Active = true; Card.ClipsDescendants = true
+Instance.new("UICorner", Card).CornerRadius = UDim.new(0,14)
+Instance.new("UIStroke", Card).Color = C3(22,34,55)
 
-local kbGui
-if not isMobile then
-    kbGui=Instance.new("ScreenGui"); kbGui.Name="BSH_Keybind"; kbGui.DisplayOrder=1200; kbGui.ResetOnSpawn=false
-    kbGui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; kbGui.Enabled=false; kbGui.Parent=CoreGui
-    local kbP=Instance.new("Frame",kbGui); kbP.Size=U2(0,260,0,166); kbP.Position=U2(0.5,-130,0.5,-83)
-    kbP.BackgroundColor3=C3(7,9,14); kbP.BorderSizePixel=0; kbP.Active=true
-    Instance.new("UICorner",kbP).CornerRadius=UDim.new(0,14); Instance.new("UIStroke",kbP).Color=C3(22,34,55)
-    local kbA=Instance.new("Frame",kbP); kbA.Size=U2(1,0,0,2); kbA.BackgroundColor3=C3(180,120,255); kbA.BorderSizePixel=0
-    Instance.new("UIGradient",kbA).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(100,80,255)),ColorSequenceKeypoint.new(1,C3(220,100,255))})
-    local kbH=Instance.new("Frame",kbP); kbH.Size=U2(1,0,0,36); kbH.Position=U2(0,0,0,2); kbH.BackgroundTransparency=1
-    local kbTL=Instance.new("TextLabel",kbH); kbTL.Size=U2(1,-40,1,0); kbTL.Position=U2(0,14,0,0)
-    kbTL.BackgroundTransparency=1; kbTL.Font=Enum.Font.GothamBold; kbTL.TextSize=12
-    kbTL.Text="KEYBINDS"; kbTL.TextColor3=C3(180,150,255); kbTL.TextXAlignment=Enum.TextXAlignment.Left
-    local kbCl=Instance.new("TextButton",kbH); kbCl.Size=U2(0,26,0,26); kbCl.Position=U2(1,-34,0.5,-13)
-    kbCl.BackgroundColor3=C3(40,20,20); kbCl.BorderSizePixel=0; kbCl.Font=Enum.Font.GothamBold
-    kbCl.TextSize=14; kbCl.Text="X"; kbCl.TextColor3=C3(200,80,80)
-    Instance.new("UICorner",kbCl).CornerRadius=UDim.new(0,6)
-    kbCl.MouseButton1Click:Connect(function() kbGui.Enabled=false end)
-    local function makeKbRow(lbl,y,getV,onB)
-        local row=Instance.new("Frame",kbP); row.Size=U2(1,-28,0,44); row.Position=U2(0,14,0,y); row.BackgroundTransparency=1
-        local l=Instance.new("TextLabel",row); l.Size=U2(1,0,0,18); l.BackgroundTransparency=1
-        l.Font=Enum.Font.Gotham; l.TextSize=9; l.Text=lbl; l.TextColor3=C3(70,85,115); l.TextXAlignment=Enum.TextXAlignment.Left
-        local b=Instance.new("TextButton",row); b.Size=U2(1,0,0,24); b.Position=U2(0,0,0,20)
-        b.BackgroundColor3=C3(14,18,30); b.BorderSizePixel=0; b.Font=Enum.Font.GothamBold
-        b.TextSize=13; b.Text=getV(); b.TextColor3=C3(200,170,255); b.AutoButtonColor=false
-        Instance.new("UICorner",b).CornerRadius=UDim.new(0,7); Instance.new("UIStroke",b).Color=C3(55,38,100)
-        local lst=false
-        b.MouseButton1Click:Connect(function()
-            lst=true; b.Text="[ press key ]"; b.TextColor3=C3(255,200,80)
-            local conn; conn=UserInputService.InputBegan:Connect(function(i)
-                if not lst then conn:Disconnect(); return end
-                if i.UserInputType==Enum.UserInputType.Keyboard then
-                    lst=false; conn:Disconnect(); onB(i.KeyCode.Name)
-                    b.Text=i.KeyCode.Name; b.TextColor3=C3(200,170,255); saveState()
-                end
-            end)
-        end)
-    end
-    makeKbRow("HUNT TOGGLE",42,function() return S.keybind end,function(n) S.keybind=n end)
-    makeKbRow("EMERGENCY STOP",96,function() return S.stopKeybind end,function(n) S.stopKeybind=n end)
-    local kdOn=false; local kdOff=Vector2.new()
-    kbH.InputBegan:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.MouseButton1 then
-            kdOn=true; kdOff=Vector2.new(i.Position.X-kbP.AbsolutePosition.X,i.Position.Y-kbP.AbsolutePosition.Y)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(i)
-        if kdOn and i.UserInputType==Enum.UserInputType.MouseMovement then
-            kbP.Position=U2(0,i.Position.X-kdOff.X,0,i.Position.Y-kdOff.Y)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.MouseButton1 then kdOn=false end
-    end)
-end
+local AccB = Instance.new("Frame", Card)
+AccB.Size = U2(1,0,0,2); AccB.BorderSizePixel = 0
+AccB.BackgroundColor3 = C3(0,255,160)
+Instance.new("UIGradient", AccB).Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, C3(0,220,255)),
+    ColorSequenceKeypoint.new(0.5, C3(0,255,160)),
+    ColorSequenceKeypoint.new(1, C3(80,60,255))
+})
 
-local KeyGui=Instance.new("ScreenGui"); KeyGui.Name="BSH_Key"; KeyGui.DisplayOrder=5000; KeyGui.ResetOnSpawn=false
-KeyGui.IgnoreGuiInset=true; KeyGui.Enabled=not keyValid; KeyGui.Parent=CoreGui
-local KW=isMobile and 310 or 340
-local KCard=Instance.new("Frame",KeyGui); KCard.Size=U2(0,KW,0,220); KCard.Position=U2(0.5,-KW/2,0.5,-110)
-KCard.BackgroundColor3=C3(8,11,18); KCard.BorderSizePixel=0; KCard.Active=true
-Instance.new("UICorner",KCard).CornerRadius=UDim.new(0,16); Instance.new("UIStroke",KCard).Color=C3(25,38,58)
-local KAccL=Instance.new("Frame",KCard); KAccL.Size=U2(1,0,0,2); KAccL.BackgroundColor3=C3(0,200,140); KAccL.BorderSizePixel=0
-Instance.new("UIGradient",KAccL).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,200,255)),ColorSequenceKeypoint.new(1,C3(0,200,140))})
-local KTitle=Instance.new("TextLabel",KCard); KTitle.Size=U2(1,-32,0,36); KTitle.Position=U2(0,16,0,12)
-KTitle.BackgroundTransparency=1; KTitle.Font=Enum.Font.GothamBold; KTitle.TextSize=18
-KTitle.Text="BANANA SERVER HOP"; KTitle.TextColor3=C3(0,220,150); KTitle.TextXAlignment=Enum.TextXAlignment.Left
-local KSub=Instance.new("TextLabel",KCard); KSub.Size=U2(1,-32,0,14); KSub.Position=U2(0,16,0,48)
-KSub.BackgroundTransparency=1; KSub.Font=Enum.Font.Gotham; KSub.TextSize=10
-KSub.Text="Enter today's key. Resets daily."; KSub.TextColor3=C3(55,75,110); KSub.TextXAlignment=Enum.TextXAlignment.Left
-local KGetBtn=Instance.new("TextButton",KCard); KGetBtn.Size=U2(1,-32,0,32); KGetBtn.Position=U2(0,16,0,68)
-KGetBtn.BackgroundColor3=C3(14,22,38); KGetBtn.BorderSizePixel=0; KGetBtn.Font=Enum.Font.GothamBold
-KGetBtn.TextSize=12; KGetBtn.Text="Click here to get today's key"; KGetBtn.TextColor3=C3(80,160,255); KGetBtn.AutoButtonColor=false
-Instance.new("UICorner",KGetBtn).CornerRadius=UDim.new(0,9); Instance.new("UIStroke",KGetBtn).Color=C3(25,50,90)
-KGetBtn.MouseButton1Click:Connect(function()
-    pcall(function() if setclipboard then setclipboard(WORK_INK_URL) end end)
-    pcall(function() if open_url then open_url(WORK_INK_URL) end end)
-    pcall(function() if syn and syn.open_url then syn.open_url(WORK_INK_URL) end end)
-    notify("Link Copied","Paste in browser if it did not open.","info")
-end)
-local KIF=Instance.new("Frame",KCard); KIF.Size=U2(1,-32,0,36); KIF.Position=U2(0,16,0,110)
-KIF.BackgroundColor3=C3(11,16,26); KIF.BorderSizePixel=0
-Instance.new("UICorner",KIF).CornerRadius=UDim.new(0,9)
-local KIStroke=Instance.new("UIStroke",KIF); KIStroke.Color=C3(24,36,58); KIStroke.Thickness=1
-local KInput=Instance.new("TextBox",KIF); KInput.Size=U2(1,-16,1,0); KInput.Position=U2(0,8,0,0)
-KInput.BackgroundTransparency=1; KInput.Font=Enum.Font.GothamBold; KInput.TextSize=14; KInput.Text=""
-KInput.PlaceholderText="paste key here..."; KInput.PlaceholderColor3=C3(38,52,76); KInput.TextColor3=C3(220,240,255)
-KInput.ClearTextOnFocus=false; KInput.BorderSizePixel=0
-local KSubmit=Instance.new("TextButton",KCard); KSubmit.Size=U2(1,-32,0,36); KSubmit.Position=U2(0,16,0,156)
-KSubmit.BackgroundColor3=C3(0,180,120); KSubmit.BorderSizePixel=0; KSubmit.Font=Enum.Font.GothamBold
-KSubmit.TextSize=14; KSubmit.Text="CONFIRM KEY"; KSubmit.TextColor3=C3(0,8,6); KSubmit.AutoButtonColor=false
-Instance.new("UICorner",KSubmit).CornerRadius=UDim.new(0,9)
-Instance.new("UIGradient",KSubmit).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,220,150)),ColorSequenceKeypoint.new(1,C3(0,180,255))})
-local KStatus=Instance.new("TextLabel",KCard); KStatus.Size=U2(1,-32,0,14); KStatus.Position=U2(0,16,0,196)
-KStatus.BackgroundTransparency=1; KStatus.Font=Enum.Font.Gotham; KStatus.TextSize=10
-KStatus.Text=""; KStatus.TextColor3=C3(80,100,140); KStatus.TextXAlignment=Enum.TextXAlignment.Center
+local Header = Instance.new("Frame", Card)
+Header.Size = U2(1,0,0,40); Header.Position = U2(0,0,0,2)
+Header.BackgroundTransparency = 1
 
-local MainSG
-local function unlockUI()
-    keyValid=true; saveKeyCache(); KeyGui.Enabled=false
-    if MainSG then MainSG.Enabled=true end
-    notify("Welcome!","Key accepted.","success")
-end
-local function validateKey(inputKey)
-    if not inputKey or inputKey=="" then return end
-    KSubmit.Text="CHECKING..."; KStatus.Text="Contacting server..."; KStatus.TextColor3=C3(80,120,180)
-    task.spawn(function()
-        local todayKey=fetchTodayKey()
-        if not todayKey then
-            KSubmit.Text="CONFIRM KEY"; KStatus.Text="Cannot reach key server."; KStatus.TextColor3=C3(200,100,40)
-            TweenService:Create(KIStroke,TI(0.1),{Color=C3(180,80,30)}):Play()
-            task.delay(1.5,function() KIStroke.Color=C3(24,36,58) end); return
-        end
-        if inputKey:lower()==todayKey:lower() then
-            KStatus.Text="Access granted!"; KStatus.TextColor3=C3(0,220,140); task.wait(0.4); unlockUI()
-        else
-            KSubmit.Text="CONFIRM KEY"; KStatus.Text="Wrong key."; KStatus.TextColor3=C3(210,60,60)
-            TweenService:Create(KIStroke,TI(0.1),{Color=C3(200,40,40)}):Play()
-            task.delay(1.5,function() KIStroke.Color=C3(24,36,58) end)
-        end
-    end)
-end
-KSubmit.MouseButton1Click:Connect(function() validateKey(KInput.Text:match("^%s*(.-)%s*$")) end)
-KInput.FocusLost:Connect(function(e) if e then KSubmit.MouseButton1Click:Fire() end end)
+local TitleL = Instance.new("TextLabel", Header)
+TitleL.Size = U2(1,-10,1,0); TitleL.Position = U2(0,12,0,0)
+TitleL.BackgroundTransparency = 1; TitleL.Font = Enum.Font.GothamBold
+TitleL.TextSize = 12; TitleL.Text = "BANANA SERVER HOP"
+TitleL.TextColor3 = C3(170,190,220); TitleL.TextXAlignment = Enum.TextXAlignment.Left
 
-local CW=isMobile and 310 or 296
-local CH=isMobile and 440 or 408
+local HopBadge = Instance.new("TextLabel", Header)
+HopBadge.Size = U2(0,72,0,20); HopBadge.Position = U2(1,-80,0.5,-10)
+HopBadge.BackgroundColor3 = C3(12,18,30); HopBadge.BorderSizePixel = 0
+HopBadge.Font = Enum.Font.GothamBold; HopBadge.TextSize = 10
+HopBadge.Text = "HOPS: 0"; HopBadge.TextColor3 = C3(0,190,120)
+Instance.new("UICorner", HopBadge).CornerRadius = UDim.new(0,6)
+Instance.new("UIStroke", HopBadge).Color = C3(20,32,50)
 
-local SG=Instance.new("ScreenGui"); MainSG=SG
-SG.Name="BSH_Main"; SG.ResetOnSpawn=false; SG.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
-SG.DisplayOrder=1000; SG.Enabled=keyValid; SG.Parent=CoreGui
-
-local Glow=Instance.new("Frame",SG); Glow.Size=U2(0,CW+16,0,CH+14); Glow.Position=U2(0,26,0,26)
-Glow.BackgroundColor3=C3(0,255,160); Glow.BackgroundTransparency=0.87; Glow.BorderSizePixel=0
-Instance.new("UICorner",Glow).CornerRadius=UDim.new(0,20)
-
-local Card=Instance.new("Frame",SG); Card.Name="Card"; Card.Size=U2(0,CW,0,CH)
-Card.Position=U2(0,30,0,30); Card.BackgroundColor3=C3(7,9,14); Card.BorderSizePixel=0
-Card.ClipsDescendants=true; Card.Active=true
-Instance.new("UICorner",Card).CornerRadius=UDim.new(0,16)
-local CardBorder=Instance.new("UIStroke",Card); CardBorder.Color=C3(22,34,55); CardBorder.Thickness=1.2
-local AccB=Instance.new("Frame",Card); AccB.Size=U2(1,0,0,2); AccB.BorderSizePixel=0; AccB.BackgroundColor3=C3(0,255,160)
-Instance.new("UIGradient",AccB).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,220,255)),ColorSequenceKeypoint.new(0.5,C3(0,255,160)),ColorSequenceKeypoint.new(1,C3(80,60,255))})
-
-local Header=Instance.new("Frame",Card); Header.Size=U2(1,0,0,44); Header.Position=U2(0,0,0,2); Header.BackgroundTransparency=1
-local LiveDot=Instance.new("Frame",Header); LiveDot.Size=U2(0,7,0,7); LiveDot.Position=U2(0,16,0.5,-3)
-LiveDot.BackgroundColor3=C3(38,52,72); LiveDot.BorderSizePixel=0; Instance.new("UICorner",LiveDot).CornerRadius=UDim.new(1,0)
-local TitleL=Instance.new("TextLabel",Header); TitleL.Size=U2(1,-30,1,0); TitleL.Position=U2(0,30,0,0)
-TitleL.BackgroundTransparency=1; TitleL.Font=Enum.Font.GothamBold; TitleL.TextSize=12
-TitleL.Text="BANANA SERVER HOP"; TitleL.TextColor3=C3(170,190,220); TitleL.TextXAlignment=Enum.TextXAlignment.Left
-local HopBadge=Instance.new("TextLabel",Header); HopBadge.Size=U2(0,68,0,20); HopBadge.Position=U2(1,-78,0.5,-10)
-HopBadge.BackgroundColor3=C3(12,18,30); HopBadge.BorderSizePixel=0; HopBadge.Font=Enum.Font.GothamBold
-HopBadge.TextSize=10; HopBadge.Text="HOPS: "..tostring(S.hopCount); HopBadge.TextColor3=C3(0,190,120)
-Instance.new("UICorner",HopBadge).CornerRadius=UDim.new(0,6); Instance.new("UIStroke",HopBadge).Color=C3(20,32,50)
-
-local dragOn=false; local dragOff=Vector2.new()
+local dragOn = false; local dragOff = Vector2.new()
 Header.InputBegan:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
-        dragOn=true; dragOff=Vector2.new(i.Position.X-Card.AbsolutePosition.X,i.Position.Y-Card.AbsolutePosition.Y)
+    if i.UserInputType == Enum.UserInputType.MouseButton1
+    or i.UserInputType == Enum.UserInputType.Touch then
+        dragOn = true
+        dragOff = Vector2.new(
+            i.Position.X - Card.AbsolutePosition.X,
+            i.Position.Y - Card.AbsolutePosition.Y)
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
     if not dragOn then return end
-    if i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch then
-        Card.Position=U2(0,i.Position.X-dragOff.X,0,i.Position.Y-dragOff.Y)
-        Glow.Position=U2(0,i.Position.X-dragOff.X-4,0,i.Position.Y-dragOff.Y-4)
+    if i.UserInputType == Enum.UserInputType.MouseMovement
+    or i.UserInputType == Enum.UserInputType.Touch then
+        Card.Position = U2(0, i.Position.X - dragOff.X, 0, i.Position.Y - dragOff.Y)
     end
 end)
 UserInputService.InputEnded:Connect(function(i)
-    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragOn=false end
+    if i.UserInputType == Enum.UserInputType.MouseButton1
+    or i.UserInputType == Enum.UserInputType.Touch then
+        dragOn = false
+    end
 end)
 
 local function mkDiv(y)
-    local d=Instance.new("Frame",Card); d.Size=U2(1,-32,0,1); d.Position=U2(0,16,0,y)
-    d.BackgroundColor3=C3(18,28,45); d.BorderSizePixel=0
+    local d = Instance.new("Frame", Card)
+    d.Size = U2(1,-24,0,1); d.Position = U2(0,12,0,y)
+    d.BackgroundColor3 = C3(18,28,45); d.BorderSizePixel = 0
 end
-mkDiv(48)
+mkDiv(44)
 
-local ILbl=Instance.new("TextLabel",Card); ILbl.Size=U2(1,-32,0,13); ILbl.Position=U2(0,16,0,56)
-ILbl.BackgroundTransparency=1; ILbl.Font=Enum.Font.GothamBold; ILbl.TextSize=8
-ILbl.Text="MIN VALUE  (e.g. 10m, 1b)"; ILbl.TextColor3=C3(0,160,100); ILbl.TextXAlignment=Enum.TextXAlignment.Left
-local IFrm=Instance.new("Frame",Card); IFrm.Size=U2(1,-32,0,36); IFrm.Position=U2(0,16,0,71)
-IFrm.BackgroundColor3=C3(11,16,26); IFrm.BorderSizePixel=0
-Instance.new("UICorner",IFrm).CornerRadius=UDim.new(0,9)
-local IStroke=Instance.new("UIStroke",IFrm); IStroke.Color=C3(24,36,58); IStroke.Thickness=1
-local DollarL=Instance.new("TextLabel",IFrm); DollarL.Size=U2(0,26,1,0)
-DollarL.BackgroundTransparency=1; DollarL.Font=Enum.Font.GothamBold; DollarL.TextSize=16; DollarL.Text="$"; DollarL.TextColor3=C3(0,200,130)
-local InputBox=Instance.new("TextBox",IFrm); InputBox.Size=U2(1,-28,1,0); InputBox.Position=U2(0,26,0,0)
-InputBox.BackgroundTransparency=1; InputBox.Font=Enum.Font.GothamBold; InputBox.TextSize=16
-InputBox.ClearTextOnFocus=false; InputBox.BorderSizePixel=0
-InputBox.PlaceholderText="10m"; InputBox.PlaceholderColor3=C3(35,52,78); InputBox.TextColor3=C3(230,245,255)
-if S.targetValue>0 then InputBox.Text=valToInput(S.targetValue); IStroke.Color=C3(0,150,90) end
-InputBox.FocusLost:Connect(function()
-    local v=parseValue(InputBox.Text)
-    if v>0 then S.targetValue=v; saveState(); InputBox.Text=valToInput(v); TweenService:Create(IStroke,TI(0.2),{Color=C3(0,150,90)}):Play()
-    else TweenService:Create(IStroke,TI(0.2),{Color=C3(180,40,40)}):Play(); task.delay(1,function() TweenService:Create(IStroke,TI(0.2),{Color=C3(24,36,58)}):Play() end) end
+local ValLbl = Instance.new("TextLabel", Card)
+ValLbl.Size = U2(1,-24,0,13); ValLbl.Position = U2(0,12,0,52)
+ValLbl.BackgroundTransparency = 1; ValLbl.Font = Enum.Font.GothamBold
+ValLbl.TextSize = 8; ValLbl.Text = "MIN VALUE ($/s)"
+ValLbl.TextColor3 = C3(0,160,100); ValLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local ValFrm = Instance.new("Frame", Card)
+ValFrm.Size = U2(1,-24,0,34); ValFrm.Position = U2(0,12,0,67)
+ValFrm.BackgroundColor3 = C3(11,16,26); ValFrm.BorderSizePixel = 0
+Instance.new("UICorner", ValFrm).CornerRadius = UDim.new(0,8)
+local ValStroke = Instance.new("UIStroke", ValFrm)
+ValStroke.Color = C3(24,36,58); ValStroke.Thickness = 1
+local DolL = Instance.new("TextLabel", ValFrm)
+DolL.Size = U2(0,22,1,0); DolL.BackgroundTransparency = 1
+DolL.Font = Enum.Font.GothamBold; DolL.TextSize = 16
+DolL.Text = "$"; DolL.TextColor3 = C3(0,200,130)
+local ValBox = Instance.new("TextBox", ValFrm)
+ValBox.Size = U2(1,-24,1,0); ValBox.Position = U2(0,22,0,0)
+ValBox.BackgroundTransparency = 1; ValBox.Font = Enum.Font.GothamBold
+ValBox.TextSize = 16; ValBox.ClearTextOnFocus = false
+ValBox.BorderSizePixel = 0; ValBox.PlaceholderText = "30m"
+ValBox.PlaceholderColor3 = C3(35,52,78); ValBox.TextColor3 = C3(230,245,255)
+ValBox.Text = "30m"
+
+local function parseInput(txt)
+    if not txt or txt == "" then return 0 end
+    local clean = txt:gsub("^%s*", ""):gsub("%s*$", ""):lower()
+    local n, s = clean:match("^([%d%.]+)([kmbt]?)$")
+    n = tonumber(n)
+    if not n then return 0 end
+    if     s == "k" then n = n * 1e3
+    elseif s == "m" then n = n * 1e6
+    elseif s == "b" then n = n * 1e9
+    elseif s == "t" then n = n * 1e12 end
+    return n
+end
+
+local targetValue = parseInput(ValBox.Text)
+ValBox.FocusLost:Connect(function()
+    local v = parseInput(ValBox.Text)
+    if v > 0 then
+        targetValue = v
+        TweenService:Create(ValStroke, TweenInfo.new(0.2), {Color=C3(0,150,90)}):Play()
+    else
+        TweenService:Create(ValStroke, TweenInfo.new(0.2), {Color=C3(180,40,40)}):Play()
+        task.delay(1.2, function()
+            TweenService:Create(ValStroke, TweenInfo.new(0.2), {Color=C3(24,36,58)}):Play()
+        end)
+    end
 end)
 
-mkDiv(115)
-local StatL=Instance.new("TextLabel",Card); StatL.Size=U2(1,-32,0,18); StatL.Position=U2(0,16,0,122)
-StatL.BackgroundTransparency=1; StatL.Font=Enum.Font.GothamBold; StatL.TextSize=11
-StatL.Text="IDLE"; StatL.TextColor3=C3(45,60,88); StatL.TextXAlignment=Enum.TextXAlignment.Left
-local BestL=Instance.new("TextLabel",Card); BestL.Size=U2(1,-32,0,13); BestL.Position=U2(0,16,0,142)
-BestL.BackgroundTransparency=1; BestL.Font=Enum.Font.Gotham; BestL.TextSize=10
-BestL.Text="best: --"; BestL.TextColor3=C3(38,55,82); BestL.TextXAlignment=Enum.TextXAlignment.Left
-local MutL=Instance.new("TextLabel",Card); MutL.Size=U2(1,-32,0,12); MutL.Position=U2(0,16,0,157)
-MutL.BackgroundTransparency=1; MutL.Font=Enum.Font.Gotham; MutL.TextSize=9
-MutL.Text=""; MutL.TextColor3=C3(160,120,255); MutL.TextXAlignment=Enum.TextXAlignment.Left
-local BarBG=Instance.new("Frame",Card); BarBG.Size=U2(1,-32,0,3); BarBG.Position=U2(0,16,0,172)
-BarBG.BackgroundColor3=C3(14,22,36); BarBG.BorderSizePixel=0; Instance.new("UICorner",BarBG).CornerRadius=UDim.new(1,0)
-local Bar=Instance.new("Frame",BarBG); Bar.Size=U2(0,0,1,0); Bar.BackgroundColor3=C3(0,230,150); Bar.BorderSizePixel=0
-Instance.new("UICorner",Bar).CornerRadius=UDim.new(1,0)
-Instance.new("UIGradient",Bar).Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,200,255)),ColorSequenceKeypoint.new(1,C3(0,255,160))})
-local function setBar(f) TweenService:Create(Bar,TI(0.06),{Size=U2(math.clamp(f,0,1),0,1,0)}):Play() end
-mkDiv(178)
+mkDiv(108)
 
-local function makeToggle(lbl,y,key,onCol)
-    local row=Instance.new("Frame",Card); row.Size=U2(1,-32,0,28); row.Position=U2(0,16,0,y); row.BackgroundTransparency=1
-    local l=Instance.new("TextLabel",row); l.Size=U2(1,-52,1,0); l.BackgroundTransparency=1
-    l.Font=Enum.Font.Gotham; l.TextSize=11; l.Text=lbl; l.TextColor3=C3(110,130,160); l.TextXAlignment=Enum.TextXAlignment.Left
-    local track=Instance.new("TextButton",row); track.Size=U2(0,42,0,22); track.Position=U2(1,-46,0.5,-11)
-    track.BackgroundColor3=S[key] and onCol or C3(30,38,55); track.BorderSizePixel=0; track.Text=""; track.AutoButtonColor=false
-    Instance.new("UICorner",track).CornerRadius=UDim.new(1,0)
-    local thumb=Instance.new("Frame",track); thumb.Size=U2(0,16,0,16)
-    thumb.Position=S[key] and U2(1,-20,0.5,-8) or U2(0,4,0.5,-8)
-    thumb.BackgroundColor3=C3(255,255,255); thumb.BorderSizePixel=0; Instance.new("UICorner",thumb).CornerRadius=UDim.new(1,0)
-    track.MouseButton1Click:Connect(function()
-        S[key]=not S[key]; saveState()
-        TweenService:Create(track,TI(0.2),{BackgroundColor3=S[key] and onCol or C3(30,38,55)}):Play()
-        TweenService:Create(thumb,TI(0.2),{Position=S[key] and U2(1,-20,0.5,-8) or U2(0,4,0.5,-8)}):Play()
-    end)
-end
-makeToggle("Hop anyway (ignore value)",186,"hopAnyway",C3(255,160,30))
-mkDiv(222)
+local StatL = Instance.new("TextLabel", Card)
+StatL.Size = U2(1,-24,0,18); StatL.Position = U2(0,12,0,115)
+StatL.BackgroundTransparency = 1; StatL.Font = Enum.Font.GothamBold
+StatL.TextSize = 11; StatL.Text = "IDLE"
+StatL.TextColor3 = C3(45,60,88); StatL.TextXAlignment = Enum.TextXAlignment.Left
 
-local bW=isMobile and 90 or 84
-local function mkSmBtn(txt,x,w,bg,fg,cb)
-    local b=Instance.new("TextButton",Card); b.Size=U2(0,w,0,30); b.Position=U2(0,x,0,230)
-    b.BackgroundColor3=bg; b.BorderSizePixel=0; b.Font=Enum.Font.GothamBold
-    b.TextSize=isMobile and 9 or 10; b.Text=txt; b.TextColor3=fg; b.AutoButtonColor=false
-    Instance.new("UICorner",b).CornerRadius=UDim.new(0,7); b.MouseButton1Click:Connect(cb); return b
-end
-mkSmBtn("BLACKLIST",16,bW,C3(50,16,16),C3(220,90,90),function() blGui.Enabled=not blGui.Enabled; if blGui.Enabled then refreshBL() end end)
-mkSmBtn("WHITELIST",16+bW+6,bW,C3(12,40,22),C3(70,200,120),function() wlGui.Enabled=not wlGui.Enabled; if wlGui.Enabled then refreshWL() end end)
-if not isMobile then mkSmBtn("KEYBINDS",16+bW*2+12,bW,C3(24,16,48),C3(180,140,255),function() if kbGui then kbGui.Enabled=not kbGui.Enabled end end) end
-mkDiv(268)
+local BestL = Instance.new("TextLabel", Card)
+BestL.Size = U2(1,-24,0,13); BestL.Position = U2(0,12,0,135)
+BestL.BackgroundTransparency = 1; BestL.Font = Enum.Font.Gotham
+BestL.TextSize = 10; BestL.Text = "best: --"
+BestL.TextColor3 = C3(38,55,82); BestL.TextXAlignment = Enum.TextXAlignment.Left
 
-local PoolL=Instance.new("TextLabel",Card); PoolL.Size=U2(1,-32,0,14); PoolL.Position=U2(0,16,0,276)
-PoolL.BackgroundTransparency=1; PoolL.Font=Enum.Font.Gotham; PoolL.TextSize=9
-PoolL.Text="pool: loading..."; PoolL.TextColor3=C3(35,55,80); PoolL.TextXAlignment=Enum.TextXAlignment.Left
-mkDiv(294)
+local MutL = Instance.new("TextLabel", Card)
+MutL.Size = U2(1,-24,0,12); MutL.Position = U2(0,12,0,150)
+MutL.BackgroundTransparency = 1; MutL.Font = Enum.Font.Gotham
+MutL.TextSize = 9; MutL.Text = ""
+MutL.TextColor3 = C3(160,120,255); MutL.TextXAlignment = Enum.TextXAlignment.Left
 
-local Btn=Instance.new("TextButton",Card); Btn.Size=U2(1,-32,0,42); Btn.Position=U2(0,16,0,302)
-Btn.BackgroundColor3=C3(0,200,140); Btn.BorderSizePixel=0; Btn.Font=Enum.Font.GothamBold; Btn.TextSize=14
-Btn.Text="START HUNTING"; Btn.TextColor3=C3(0,8,6); Btn.AutoButtonColor=false
-Instance.new("UICorner",Btn).CornerRadius=UDim.new(0,10)
-local BtnG=Instance.new("UIGradient",Btn)
-BtnG.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,230,160)),ColorSequenceKeypoint.new(1,C3(0,190,255))}); BtnG.Rotation=135
-Btn.MouseEnter:Connect(function() TweenService:Create(Btn,TI(0.12),{BackgroundTransparency=0.15}):Play() end)
-Btn.MouseLeave:Connect(function() TweenService:Create(Btn,TI(0.12),{BackgroundTransparency=0}):Play() end)
+local PoolL = Instance.new("TextLabel", Card)
+PoolL.Size = U2(1,-24,0,12); PoolL.Position = U2(0,12,0,165)
+PoolL.BackgroundTransparency = 1; PoolL.Font = Enum.Font.Gotham
+PoolL.TextSize = 9; PoolL.Text = "pool: loading..."
+PoolL.TextColor3 = C3(35,55,80); PoolL.TextXAlignment = Enum.TextXAlignment.Left
 
-local MobileStopBtn
-if isMobile then
-    MobileStopBtn=Instance.new("TextButton",Card); MobileStopBtn.Size=U2(1,-32,0,36); MobileStopBtn.Position=U2(0,16,0,352)
-    MobileStopBtn.BackgroundColor3=C3(180,30,30); MobileStopBtn.BorderSizePixel=0
-    MobileStopBtn.Font=Enum.Font.GothamBold; MobileStopBtn.TextSize=13
-    MobileStopBtn.Text="EMERGENCY STOP"; MobileStopBtn.TextColor3=C3(255,200,200); MobileStopBtn.AutoButtonColor=false
-    Instance.new("UICorner",MobileStopBtn).CornerRadius=UDim.new(0,10); Instance.new("UIStroke",MobileStopBtn).Color=C3(220,60,60)
-    MobileStopBtn.Visible=false
+mkDiv(180)
+
+local Btn = Instance.new("TextButton", Card)
+Btn.Size = U2(1,-24,0,40); Btn.Position = U2(0,12,0,188)
+Btn.BackgroundColor3 = C3(0,200,140); Btn.BorderSizePixel = 0
+Btn.Font = Enum.Font.GothamBold; Btn.TextSize = 14
+Btn.Text = "START HUNTING"; Btn.TextColor3 = C3(0,8,6)
+Btn.AutoButtonColor = false
+Instance.new("UICorner", Btn).CornerRadius = UDim.new(0,10)
+local BtnG = Instance.new("UIGradient", Btn)
+BtnG.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, C3(0,230,160)),
+    ColorSequenceKeypoint.new(1, C3(0,190,255))
+})
+BtnG.Rotation = 135
+
+local StopBtn = Instance.new("TextButton", Card)
+StopBtn.Size = U2(1,-24,0,34); StopBtn.Position = U2(0,12,0,234)
+StopBtn.BackgroundColor3 = C3(180,30,30); StopBtn.BorderSizePixel = 0
+StopBtn.Font = Enum.Font.GothamBold; StopBtn.TextSize = 13
+StopBtn.Text = "STOP"; StopBtn.TextColor3 = C3(255,200,200)
+StopBtn.AutoButtonColor = false; StopBtn.Visible = false
+Instance.new("UICorner", StopBtn).CornerRadius = UDim.new(0,9)
+Instance.new("UIStroke", StopBtn).Color = C3(220,60,60)
+
+local function setStatus(txt, r, g, b)
+    StatL.Text = txt; StatL.TextColor3 = C3(r, g, b)
 end
 
-local KbLbl=Instance.new("TextLabel",Card)
-KbLbl.Size=U2(1,-32,0,14); KbLbl.Position=isMobile and U2(0,16,0,396) or U2(0,16,0,350)
-KbLbl.BackgroundTransparency=1; KbLbl.Font=Enum.Font.Gotham; KbLbl.TextSize=9
-KbLbl.TextColor3=C3(35,50,75); KbLbl.TextXAlignment=Enum.TextXAlignment.Center
-
-local function setStatus(txt,r,g,b) StatL.Text=txt; StatL.TextColor3=C3(r,g,b) end
-local hunting = false
-
-local function stopHunt(emergency)
-    hunting=false; S.hunting=false; saveState()
-    Btn.Text="START HUNTING"; Btn.TextColor3=C3(0,8,6)
-    BtnG.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(0,230,160)),ColorSequenceKeypoint.new(1,C3(0,190,255))})
-    if MobileStopBtn then MobileStopBtn.Visible=false end
+local function stopHunt()
+    hunting = false
     hideLoading()
-    if emergency then
-        setStatus("EMERGENCY STOP",220,60,60); notify("Stopped","Hopping stopped.","error")
-        for _=1,3 do
-            TweenService:Create(CardBorder,TI(0.1),{Color=C3(220,50,50)}):Play(); task.wait(0.12)
-            TweenService:Create(CardBorder,TI(0.1),{Color=C3(22,34,55)}):Play(); task.wait(0.12)
-        end
-    else setStatus("STOPPED",70,70,95) end
-    setBar(0); LiveDot.BackgroundColor3=C3(35,48,68)
+    Btn.Text = "START HUNTING"; Btn.TextColor3 = C3(0,8,6)
+    BtnG.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, C3(0,230,160)),
+        ColorSequenceKeypoint.new(1, C3(0,190,255))
+    })
+    StopBtn.Visible = false
+    setStatus("STOPPED", 70, 70, 95)
+    log("Stopped.")
 end
 
 local function doHop()
-    if not hunting then return end
-    for attempt=1,3 do
-        local srv=getNextServer()
-        if srv then
-            S.hopCount=S.hopCount+1; S.hunting=true; saveState()
-            HopBadge.Text="HOPS: "..tostring(S.hopCount)
-            PoolL.Text="pool: "..tostring(#serverPool)
-            queueSelf()
-            local ok=pcall(function() TeleportService:TeleportToPlaceInstance(PlaceId,srv.id,LP) end)
-            if ok then
-                showLoading(S.hopCount)
-                local t0=tick()
-                while hunting and tick()-t0 < 8 do task.wait(0.1) end
-                hideLoading()
-                return
-            end
-        end
+    local srv = getNextServer(true)
+    if not srv then
+        setStatus("NO SERVERS FOUND", 180, 80, 40)
+        log("No server available.")
+        return false
     end
-    setStatus("TELEPORT FAILED",200,80,40)
+    hopCount = hopCount + 1
+    HopBadge.Text = "HOPS: " .. tostring(hopCount)
+    PoolL.Text = "pool: " .. tostring(#serverPool)
+    queueSelf()
+    local ok = pcall(function()
+        TeleportService:TeleportToPlaceInstance(PlaceId, srv.id, LP)
+    end)
+    if ok then
+        showLoading(hopCount)
+        log("Hop #" .. tostring(hopCount) .. " -> " .. srv.id)
+        local t0 = tick()
+        while hunting and tick()-t0 < 8 do task.wait(0.1) end
+        hideLoading()
+    else
+        log("Teleport failed " .. srv.id)
+    end
+    return true
 end
 
 local function startHunt()
-    if S.targetValue<=0 then
-        setStatus("SET A VALUE  e.g. 10m",255,70,70)
-        TweenService:Create(IStroke,TI(0.1),{Color=C3(200,40,40)}):Play()
-        task.delay(1.5,function() TweenService:Create(IStroke,TI(0.2),{Color=C3(24,36,58)}):Play() end)
+    targetValue = parseInput(ValBox.Text)
+    if targetValue <= 0 then
+        setStatus("SET A VALUE  e.g. 30m", 255, 70, 70)
+        TweenService:Create(ValStroke, TweenInfo.new(0.1), {Color=C3(200,40,40)}):Play()
+        task.delay(1.5, function()
+            TweenService:Create(ValStroke, TweenInfo.new(0.2), {Color=C3(24,36,58)}):Play()
+        end)
         return
     end
-    hunting=true; S.hunting=true; saveState()
-    Btn.Text="STOP"; Btn.TextColor3=C3(255,220,220)
-    BtnG.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,C3(220,40,40)),ColorSequenceKeypoint.new(1,C3(160,20,70))})
-    if MobileStopBtn then MobileStopBtn.Visible=true end
-    notify("Hunt Started","Looking for $"..fmtVal(S.targetValue).."+","success")
+
+    hunting = true
+    Btn.Text = "HUNTING..."
+    Btn.TextColor3 = C3(180,240,200)
+    BtnG.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, C3(0,100,70)),
+        ColorSequenceKeypoint.new(1, C3(0,80,100))
+    })
+    StopBtn.Visible = true
+    log("Hunt started. Target: $" .. fmtVal(targetValue) .. "/s")
 
     task.spawn(function()
         while hunting do
-            local bestV,bestN,bestM,bestR=-1,"?","",""
-            local lastArrival=tick()
-            local found=false
+            setStatus("SCANNING...", 0, 170, 110)
+            BestL.Text = "best: --"; BestL.TextColor3 = C3(38,55,82)
+            MutL.Text = ""
+
+            local bestV, bestN, bestM, bestR = -1, "?", "", ""
+            local lastArrival = tick()
             local conn
 
-            conn=game:GetService("Workspace").DescendantAdded:Connect(function(obj)
+            conn = game:GetService("Workspace").DescendantAdded:Connect(function(obj)
                 if not hunting then conn:Disconnect(); return end
-                if obj.Name~="AnimalOverhead" then return end
+                if obj.Name ~= "AnimalOverhead" then return end
                 task.spawn(function()
                     task.wait(0.03)
                     if not hunting then return end
-                    local p=obj.Parent and obj.Parent.Parent
+                    local p = obj.Parent and obj.Parent.Parent
                     if not (p and p:IsA("BasePart")) then return end
-                    local gen=obj:FindFirstChild("Generation"); if not gen then return end
-                    local val=parseValue(gen.Text); if val<=0 then return end
-                    local dObj=obj:FindFirstChild("DisplayName")
-                    local name=(dObj and dObj.Text~="") and dObj.Text or (obj.Parent and obj.Parent.Name) or "?"
-                    local mObj=obj:FindFirstChild("Mutation")
-                    local mut=(mObj and mObj.Text~="") and mObj.Text or ""
-                    local blocked=false
-                    for _,w in ipairs(S.blacklist) do if strContains(name,w) then blocked=true; break end end
-                    if blocked then return end
-                    lastArrival=tick()
-                    if val>bestV then bestV=val; bestN=name; bestM=mut; bestR=gen.Text end
-                    setStatus("SCANNING  $"..fmtVal(bestV).."/s",0,200,130)
-                    BestL.Text="best: "..bestN.."  "..bestR; BestL.TextColor3=C3(55,85,125)
-                    MutL.Text=mut~="" and ("mutation: "..mut) or ""
-                    setBar(0.7)
-                    if val>=S.targetValue and passesWhitelist(bestN,S.whitelist) and not S.hopAnyway then
-                        conn:Disconnect(); found=true
-                    end
+                    local gen = obj:FindFirstChild("Generation")
+                    if not gen then return end
+                    local val = num(gen.Text)
+                    if val <= 0 then return end
+                    local dObj = obj:FindFirstChild("DisplayName")
+                    local name = (dObj and dObj.Text ~= "") and dObj.Text or (obj.Parent and obj.Parent.Name) or "?"
+                    local mObj = obj:FindFirstChild("Mutation")
+                    local mut = (mObj and mObj.Text ~= "") and mObj.Text or ""
+                    lastArrival = tick()
+                    if val > bestV then bestV = val; bestN = name; bestM = mut; bestR = gen.Text end
+                    setStatus("SCANNING  $" .. fmtVal(bestV) .. "/s", 0, 200, 130)
+                    BestL.Text = "best: " .. bestN .. "  " .. bestR
+                    MutL.Text = mut ~= "" and ("mutation: " .. mut) or ""
                 end)
             end)
 
-            setStatus("SCANNING...",0,170,110); setBar(0.2)
-            local v0,n0,m0,r0=findBest(S.blacklist)
-            if v0>bestV then bestV=v0; bestN=n0; bestM=m0; bestR=r0 end
-            if bestV>0 then
-                setStatus("SCANNING  $"..fmtVal(bestV).."/s",0,200,130)
-                BestL.Text="best: "..bestN.."  "..bestR; BestL.TextColor3=C3(55,85,125)
-                MutL.Text=bestM~="" and ("mutation: "..bestM) or ""
-                setBar(0.5)
-                if bestV>=S.targetValue and passesWhitelist(bestN,S.whitelist) and not S.hopAnyway then found=true end
+            local v0, n0, m0, r0 = findBest()
+            if v0 > bestV then bestV = v0; bestN = n0; bestM = m0; bestR = r0 end
+            if bestV > 0 then
+                setStatus("SCANNING  $" .. fmtVal(bestV) .. "/s", 0, 200, 130)
+                BestL.Text = "best: " .. bestN .. "  " .. bestR
+                MutL.Text = bestM ~= "" and ("mutation: " .. bestM) or ""
             end
 
-            if not found then
-                local t0=tick()
-                while hunting and not found do
-                    local el=tick()-t0
-                    setBar(0.5+math.min(el/SCAN_WINDOW,1)*0.5)
-                    if bestV>0 then setStatus("SCANNING  $"..fmtVal(bestV).."/s",0,200,130)
-                    else setStatus("SCANNING... "..tostring(math.max(0,math.ceil(SCAN_WINDOW-el))).."s",60,130,90) end
-                    if el>0.4 and bestV<=0 and tick()-lastArrival>0.4 then break end
-                    if el>=SCAN_WINDOW then break end
-                    task.wait(0.05)
-                end
+            local t0 = tick()
+            while hunting do
+                local el = tick() - t0
+                if el > 0.5 and bestV <= 0 and tick()-lastArrival > 0.5 then break end
+                if el >= SCAN_WINDOW then break end
+                task.wait(0.05)
             end
-
             conn:Disconnect()
             if not hunting then break end
 
-            if found or (bestV>=S.targetValue and passesWhitelist(bestN,S.whitelist) and not S.hopAnyway) then
-                setStatus("FOUND!  "..bestN.."  "..bestR,0,255,160)
-                BestL.Text="LOCKED:  "..bestN.."  "..bestR; BestL.TextColor3=C3(0,220,140)
-                MutL.Text=bestM~="" and ("mutation: "..bestM) or ""
-                setBar(1); playAlert()
-                notify("FOUND IT!",bestN.." -- "..bestR,"success")
-                for _=1,6 do
-                    TweenService:Create(CardBorder,TI(0.1),{Color=C3(0,255,150)}):Play(); task.wait(0.13)
-                    TweenService:Create(CardBorder,TI(0.1),{Color=C3(22,34,55)}):Play(); task.wait(0.13)
-                end
-                stopHunt(false); break
+            if bestV >= targetValue then
+                foundCount = foundCount + 1
+                setStatus("FOUND!  " .. bestN .. "  " .. bestR, 0, 255, 160)
+                BestL.Text = "LOCKED: " .. bestN .. "  " .. bestR
+                BestL.TextColor3 = C3(0,220,140)
+                MutL.Text = bestM ~= "" and ("mutation: " .. bestM) or ""
+                log("FOUND: " .. bestN .. " " .. bestR)
+                local sound = Instance.new("Sound", game:GetService("SoundService"))
+                sound.SoundId = "rbxassetid://4590662766"; sound.Volume = 1
+                pcall(function() sound:Play() end)
+                task.delay(5, function() pcall(function() sound:Destroy() end) end)
+                stopHunt()
+                break
             end
 
-            if bestV>0 then setStatus("$"..fmtVal(bestV).."/s -- hopping",60,100,160) else setStatus("nothing -- hopping",55,75,110) end
+            if bestV > 0 then
+                setStatus("$" .. fmtVal(bestV) .. "/s too low -- hopping", 60, 100, 160)
+            else
+                setStatus("nothing -- hopping", 55, 75, 110)
+            end
+
             doHop()
         end
     end)
 end
 
-task.spawn(function()
-    while true do
-        pcall(function()
-            for _,obj in ipairs(CoreGui:GetDescendants()) do
-                if obj:IsA("TextButton") and not obj:IsDescendantOf(SG)
-                and not obj:IsDescendantOf(blGui) and not obj:IsDescendantOf(wlGui)
-                and not obj:IsDescendantOf(LoadGui) and not obj:IsDescendantOf(KeyGui)
-                and not obj:IsDescendantOf(NotifGui) and (not kbGui or not obj:IsDescendantOf(kbGui)) then
-                    local t=obj.Text:lower()
-                    if t=="ok" or t=="okay" or t=="leave" then pcall(function() obj.MouseButton1Click:Fire() end) end
-                end
-            end
-        end)
-        task.wait(0.25)
-    end
+Btn.MouseButton1Click:Connect(function()
+    if not hunting then startHunt() end
+end)
+StopBtn.MouseButton1Click:Connect(function()
+    if hunting then stopHunt() end
 end)
 
-Players.PlayerRemoving:Connect(function(p) if p~=LP then notify(p.Name.." left","","info") end end)
-
-if not isMobile then
-    UserInputService.InputBegan:Connect(function(i,gpe)
-        if gpe then return end
-        if i.UserInputType~=Enum.UserInputType.Keyboard then return end
-        local nm=i.KeyCode.Name
-        if nm==S.stopKeybind and hunting then stopHunt(true); return end
-        if nm==S.keybind then if hunting then stopHunt(false) else startHunt() end end
-    end)
-end
-Btn.MouseButton1Click:Connect(function() if hunting then stopHunt(false) else startHunt() end end)
-if MobileStopBtn then MobileStopBtn.MouseButton1Click:Connect(function() if hunting then stopHunt(true) end end) end
-
 task.spawn(function()
     while true do
-        PoolL.Text="pool: "..tostring(#serverPool)..(fetchingPage and " (filling...)" or "")
-        if not isMobile then KbLbl.Text="toggle: "..S.keybind.."  stop: "..S.stopKeybind
-        else KbLbl.Text="tap START  |  tap STOP to cancel" end
+        PoolL.Text = "pool: " .. tostring(#serverPool) .. (fetchingPage and " (filling)" or "")
         task.wait(1)
     end
 end)
+
 task.spawn(function()
-    local t=0
-    while true do
-        t=t+0.04; local a=(math.sin(t*3)+1)/2
-        LiveDot.BackgroundColor3=hunting and C3(0,math.floor(190+a*65),math.floor(110+a*80)) or C3(35,48,68)
-        task.wait(0.04)
-    end
+    while true do dismissPopups(); task.wait(0.25) end
 end)
 
-if wasHunting and S.targetValue>0 and keyValid then
-    InputBox.Text=valToInput(S.targetValue); IStroke.Color=C3(0,150,90)
-    HopBadge.Text="HOPS: "..tostring(S.hopCount)
-    task.spawn(function()
-        task.wait(1.5); notify("Auto-Resuming","Continuing from hop #"..tostring(S.hopCount),"info")
-        task.wait(0.2); startHunt()
-    end)
-end
-
-print("[BSH v12] loaded | mobile:"..tostring(isMobile).." | key:"..tostring(keyValid))
+print("[BSH v14] loaded | mobile:" .. tostring(isMobile) .. " | target:" .. fmtVal(MIN_VALUE_MPS))
