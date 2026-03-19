@@ -1,95 +1,120 @@
--- BANANA SERVER HOP v19
--- Auto-run via junkie.com  |  No key code here  |  ASCII only  |  No +=  No *=
+-- BANANA SERVER HOP v20
+-- junkie.com Original Code field
+-- No +=  No *=  ASCII only  No block comments
 
--- ============================================================
--- CONFIG  (edit these)
--- ============================================================
-local JUNKIE_URL    = "https://junkie.lol/raw/XXXXXXXX"  -- paste your junkie raw URL
-local SETTINGS_FILE = "BSH_settings.json"
-local SCAN_MAX      = 3      -- max seconds to scan per server
-local SCAN_SETTLE   = 0.8    -- stop scanning early if value stable for this long
-local LOAD_WAIT     = 5      -- seconds to wait for game to load after teleport
--- ============================================================
+-- ================================================================
+-- CONFIG  (edit these values)
+-- ================================================================
+local JUNKIE_URL    = "https://jnkie.com/raw/XXXXXXXX"
+local SETTINGS_FILE = "BSH_v20.json"
+local WEBHOOK_URL   = "https://discord.com/api/webhooks/1481661025052004453/swd_TdVan6hVXYbf-IzymPjXChvoxqPE6nn7unwIRxAGkkW8JOZhQmh3d8xbutCG9oPS"
+local SCAN_MAX      = 2.5
+local SCAN_SETTLE   = 0.6
+local LOAD_WAIT     = 4
+local MIN_PLAYERS   = 4
+local KB_TOGGLE     = "RightBracket"
+local KB_HOP        = "BackSlash"
+local KB_HIDE       = "RightShift"
+-- ================================================================
 
-local Players         = game:GetService("Players")
-local TeleportService = game:GetService("TeleportService")
-local HttpService     = game:GetService("HttpService")
-local UserInputService= game:GetService("UserInputService")
-local TweenService    = game:GetService("TweenService")
-local StarterGui      = game:GetService("StarterGui")
-local CoreGui         = game:GetService("CoreGui")
-local SoundService    = game:GetService("SoundService")
-local LP              = Players.LocalPlayer
-local PlaceId         = game.PlaceId
-local C3  = Color3.fromRGB
-local U2  = UDim2.new
-local TI  = TweenInfo.new
-local UD  = UDim.new
-
+local Players          = game:GetService("Players")
+local TeleportService  = game:GetService("TeleportService")
+local HttpService      = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
+local StarterGui       = game:GetService("StarterGui")
+local CoreGui          = game:GetService("CoreGui")
+local SoundService     = game:GetService("SoundService")
+local RunService       = game:GetService("RunService")
+local LP               = Players.LocalPlayer
+local PlaceId          = game.PlaceId
+local C3   = Color3.fromRGB
+local U2   = UDim2.new
+local TI   = TweenInfo.new
+local UD   = UDim.new
+local V2   = Vector2.new
 local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
+-- remove leftover GUIs from previous runs
 for _, v in ipairs(CoreGui:GetChildren()) do
-    if type(v.Name) == "string" and v.Name:sub(1,4) == "BSH_" then v:Destroy() end
-end
-
-local function log(msg) print("[BSH] " .. tostring(msg)) end
-local function notify(t, b)
-    pcall(function() StarterGui:SetCore("SendNotification", {Title=t; Text=b; Duration=4}) end)
-end
-
--- ============================================================
--- FILE I/O  (safe for all executors)
--- ============================================================
-local _isfile    = rawget(_G, "isfile")
-local _readfile  = rawget(_G, "readfile")
-local _writefile = rawget(_G, "writefile")
-
-local function safeRead(f)
-    if not _isfile or not _readfile then return nil end
-    local ok, ex = pcall(_isfile, f)
-    if not ok or not ex then return nil end
-    local ok2, d = pcall(_readfile, f)
-    return ok2 and d or nil
-end
-
-local function safeWrite(f, d)
-    if not _writefile then return false end
-    -- some executors need the folder to exist; try a pre-touch
-    pcall(_writefile, f, d)
-    -- verify write succeeded
-    local ok, ex = pcall(function()
-        if _isfile then return _isfile(f) end
-        return false
-    end)
-    return ok and ex
-end
-
--- ============================================================
--- SETTINGS
--- ============================================================
-local Cfg = {targetValue=30e6, blacklist={}, whitelist={}, wasHunting=false}
-
-local function saveCfg()
-    local ok, enc = pcall(function() return HttpService:JSONEncode(Cfg) end)
-    if not ok then log("JSON encode error"); return end
-    local wrote = safeWrite(SETTINGS_FILE, enc)
-    if wrote then
-        log("Settings saved OK")
-    else
-        log("Settings save FAILED (writefile unavailable)")
+    if type(v.Name) == "string" and v.Name:sub(1, 4) == "BSH_" then
+        pcall(function() v:Destroy() end)
     end
 end
 
+local function log(m) print("[BSH] " .. tostring(m)) end
+local function notify(t, b)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {Title = t; Text = b; Duration = 4})
+    end)
+end
+
+-- ================================================================
+-- FILE I/O  (direct pcall - works on Synapse Z, KRNL, Delta, all)
+-- ================================================================
+local function safeWrite(f, d)
+    return pcall(function() writefile(f, d) end)
+end
+
+local function safeRead(f)
+    local exists = false
+    pcall(function() exists = isfile(f) end)
+    if not exists then return nil end
+    local ok, d = pcall(function() return readfile(f) end)
+    return ok and d or nil
+end
+
+-- ================================================================
+-- SETTINGS
+-- ================================================================
+local Cfg = {
+    targetValue   = 30e6,
+    blacklist     = {},
+    whitelist     = {},
+    customTargets = {},
+    wasHunting    = false,
+}
+
+local function saveState()
+    -- saves settings + hunting state + hops + history all in one file
+    local payload = {
+        targetValue   = Cfg.targetValue,
+        blacklist     = Cfg.blacklist,
+        whitelist     = Cfg.whitelist,
+        customTargets = Cfg.customTargets,
+        wasHunting    = Cfg.wasHunting,
+        hopCount      = hopCount,
+        history       = history,
+    }
+    local ok, enc = pcall(function() return HttpService:JSONEncode(payload) end)
+    if not ok then return false end
+    getgenv().BSH_STATE = enc
+    return safeWrite(SETTINGS_FILE, enc)
+end
+
+local function saveCfg()
+    return saveState()
+end
+
+-- loaded BEFORE hopCount/history are declared - values stored here temporarily
+local _loaded_hopCount  = 0
+local _loaded_history   = {}
+local _loaded_wasHunting = false
+
 local function loadCfg()
     local raw = safeRead(SETTINGS_FILE)
-    if not raw then log("No settings file, using defaults"); return end
+    if not raw then raw = getgenv().BSH_STATE end
+    if not raw then log("No settings file found"); return end
     local ok, d = pcall(function() return HttpService:JSONDecode(raw) end)
     if not ok or type(d) ~= "table" then log("Settings decode failed"); return end
-    if type(d.targetValue) == "number" and d.targetValue > 0 then Cfg.targetValue = d.targetValue end
-    if type(d.blacklist)   == "table"  then Cfg.blacklist   = d.blacklist  end
-    if type(d.whitelist)   == "table"  then Cfg.whitelist   = d.whitelist  end
-    if type(d.wasHunting)  == "boolean" then Cfg.wasHunting = d.wasHunting end
-    log("Settings loaded: target=$" .. Cfg.targetValue .. " wasHunting=" .. tostring(Cfg.wasHunting))
+    if type(d.targetValue)   == "number" and d.targetValue > 0 then Cfg.targetValue   = d.targetValue   end
+    if type(d.blacklist)     == "table"  then Cfg.blacklist     = d.blacklist           end
+    if type(d.whitelist)     == "table"  then Cfg.whitelist     = d.whitelist           end
+    if type(d.customTargets) == "table"  then Cfg.customTargets = d.customTargets       end
+    if type(d.wasHunting)    == "boolean" then _loaded_wasHunting = d.wasHunting        end
+    if type(d.hopCount)      == "number"  then _loaded_hopCount   = d.hopCount          end
+    if type(d.history)       == "table"   then _loaded_history    = d.history           end
+    log("State loaded: hops=" .. tostring(d.hopCount) .. " hunting=" .. tostring(d.wasHunting))
 end
 
 loadCfg()
@@ -97,39 +122,36 @@ loadCfg()
 local BLset = {}
 local WLset = {}
 local function rebuildSets()
-    BLset = {}
-    WLset = {}
+    BLset = {}; WLset = {}
     for _, v in ipairs(Cfg.blacklist) do BLset[v:lower()] = true end
     for _, v in ipairs(Cfg.whitelist) do WLset[v:lower()] = true end
 end
 rebuildSets()
 
--- ============================================================
--- AUTO-EXECUTE  (queues this script to re-run after teleport)
--- ============================================================
+-- ================================================================
+-- AUTO-EXECUTE  (queues script to re-run after teleport)
+-- ================================================================
 local SCRIPT_SRC = nil
--- Try junkie URL first
 pcall(function()
     local r = game:HttpGet(JUNKIE_URL)
     if r and #r > 100 then SCRIPT_SRC = r end
 end)
--- Fallback: read from executor workspace
 if not SCRIPT_SRC then
-    local r = safeRead("BSH_v19.lua")
+    local r = safeRead("BSH_v20.lua")
     if r then SCRIPT_SRC = r end
 end
 
 local function queueSelf()
     if not SCRIPT_SRC then return end
     local qot = rawget(_G, "queue_on_teleport")
-    if qot then pcall(qot, SCRIPT_SRC); return end
+    if qot then pcall(qot, SCRIPT_SRC) end
     local syn = rawget(_G, "syn")
     if syn and syn.queue_on_teleport then pcall(syn.queue_on_teleport, SCRIPT_SRC) end
 end
 
--- ============================================================
+-- ================================================================
 -- VALUE PARSER
--- ============================================================
+-- ================================================================
 local function parseValue(t)
     if not t then return 0 end
     local n, s = t:match("%$([%d%.]+)%s*([kKmMbBtT]?)")
@@ -152,7 +174,7 @@ end
 
 local function parseInput(txt)
     if not txt or txt == "" then return 0 end
-    local n, s = txt:lower():gsub("%s",""):match("^([%d%.]+)([kmbt]?)$")
+    local n, s = txt:lower():gsub("%s", ""):match("^([%d%.]+)([kmbt]?)$")
     n = tonumber(n)
     if not n then return 0 end
     if s == "k" then n = n * 1e3  end
@@ -169,93 +191,324 @@ local function valToStr(n)
     return tostring(math.floor(n))
 end
 
--- ============================================================
--- SCANNER
--- ============================================================
+-- ================================================================
+-- SCANNER  (event-driven cache - zero CPU overhead between scans)
+-- ================================================================
+local animalCache = {}
+
+local function rebuildCache()
+    animalCache = {}
+    local ok, desc = pcall(function() return workspace:GetDescendants() end)
+    if not ok or not desc then return end
+    for _, o in next, desc do
+        if o.Name == "AnimalOverhead" then animalCache[o] = true end
+    end
+end
+
+pcall(function()
+    workspace.DescendantAdded:Connect(function(o)
+        if o.Name == "AnimalOverhead" then animalCache[o] = true end
+    end)
+    workspace.DescendantRemoving:Connect(function(o)
+        if o.Name == "AnimalOverhead" then animalCache[o] = nil end
+    end)
+end)
+
+rebuildCache()
+
 local function scanBest()
     local bv, bn, br = -1, "?", ""
-    local ok, desc = pcall(function() return workspace:GetDescendants() end)
-    if not ok or not desc then return bv, bn, br end
-    for _, o in next, desc do
-        if o.Name == "AnimalOverhead" then
+    for o in next, animalCache do
+        if o and o.Parent then
             local g = o:FindFirstChild("Generation")
             if g then
                 local ok2, v = pcall(parseValue, g.Text)
                 if ok2 and v > bv then
-                    bv = v
-                    br = g.Text
+                    bv = v; br = g.Text
                     local dn = o:FindFirstChild("DisplayName")
                     bn = (dn and dn.Text ~= "") and dn.Text or "?"
                 end
             end
+        else
+            animalCache[o] = nil
         end
     end
     return bv, bn, br
 end
 
 local function hasAnimals()
-    local ok, desc = pcall(function() return workspace:GetDescendants() end)
-    if not ok or not desc then return false end
-    for _, o in next, desc do
-        if o.Name == "AnimalOverhead" then return true end
+    for o in next, animalCache do
+        if o and o.Parent then return true end
+        animalCache[o] = nil
     end
     return false
 end
 
--- ============================================================
--- SOUND
--- ============================================================
-local alertSound = Instance.new("Sound", SoundService)
-alertSound.SoundId = "rbxassetid://4590662766"
-alertSound.Volume  = 1
-local function playAlert()
-    pcall(function() alertSound:Stop(); alertSound:Play() end)
+-- ================================================================
+-- ================================================================
+-- SERVER HOP
+-- Simple, minimal, no clever tricks. Just works.
+-- ================================================================
+local VISITED_FILE = "BSH_visited.json"
+
+-- Load visited IDs from file. Returns table of {[jobId]=true}
+local function loadV()
+    local ok1, ex = pcall(isfile, VISITED_FILE)
+    if not ok1 or not ex then return {} end
+    local ok2, raw = pcall(readfile, VISITED_FILE)
+    if not ok2 or not raw or raw == "" then return {} end
+    local ok3, t = pcall(HttpService.JSONDecode, HttpService, raw)
+    if not ok3 or type(t) ~= "table" then return {} end
+    -- strip __cursor key, return only IDs
+    local out = {}
+    for k, v in pairs(t) do
+        if k ~= "__cursor" then out[k] = true end
+    end
+    return out
 end
 
--- ============================================================
--- GUI
--- ============================================================
-local W = isMobile and 312 or 298
+-- Save visited IDs + cursor to file
+local function saveV(ids, cursor)
+    local payload = {}
+    for k in pairs(ids) do payload[k] = true end
+    payload["__cursor"] = cursor or ""
+    local ok, enc = pcall(HttpService.JSONEncode, HttpService, payload)
+    if not ok then return end
+    pcall(writefile, VISITED_FILE, enc)
+end
+
+-- Get cursor from file
+local function loadCursor()
+    local ok1, ex = pcall(isfile, VISITED_FILE)
+    if not ok1 or not ex then return "" end
+    local ok2, raw = pcall(readfile, VISITED_FILE)
+    if not ok2 or not raw or raw == "" then return "" end
+    local ok3, t = pcall(HttpService.JSONDecode, HttpService, raw)
+    if not ok3 or type(t) ~= "table" then return "" end
+    local cur = t["__cursor"]
+    if type(cur) == "string" and cur ~= "null" and cur ~= "" then return cur end
+    return ""
+end
+
+local function getServers(cursor)
+    local url = ("https://games.roblox.com/v1/games/%d/servers/Public"
+        .. "?sortOrder=Asc&excludeFullGames=true&limit=25"):format(PlaceId)
+    if cursor and cursor ~= "" then
+        url = url .. "&cursor=" .. cursor
+    end
+    local ok, body = pcall(game.HttpGet, game, url)
+    if not ok or not body then return nil, nil end
+    local ok2, res = pcall(HttpService.JSONDecode, HttpService, body)
+    if not ok2 or type(res) ~= "table" or type(res.data) ~= "table" then return nil, nil end
+    local next = res.nextPageCursor
+    if type(next) ~= "string" or next == "null" then next = "" end
+    return res.data, next
+end
+
+local function doTeleport()
+    queueSelf()
+    task.wait(0.15)
+
+    -- load state from file
+    local visited = loadV()
+    local cursor  = loadCursor()
+    visited[game.JobId] = true  -- always mark current as visited
+
+    log("doTeleport: visited=" .. (function() local n=0; for _ in pairs(visited) do n=n+1 end; return n end)()
+        .. " cursor=" .. (cursor == "" and "START" or cursor:sub(1,12)))
+
+    local pick       = nil
+    local newCursor  = cursor
+    local tries      = 0
+    local didReset   = false
+
+    -- walk pages until we find an unvisited server
+    while tries < 30 do
+        tries = tries + 1
+        local data, nextCur = getServers(newCursor)
+
+        if not data then
+            log("HTTP fail on try " .. tries)
+            task.wait(0.5)
+            -- retry same cursor
+        else
+            log("Try " .. tries .. ": got " .. #data .. " servers")
+            for _, srv in ipairs(data) do
+                if type(srv.id) == "string"
+                and srv.id ~= game.JobId
+                and not visited[srv.id]
+                and type(srv.playing) == "number"
+                and srv.playing >= MIN_PLAYERS then
+                    pick      = srv
+                    newCursor = nextCur  -- save cursor AFTER this page
+                    break
+                end
+            end
+            if pick then break end
+
+            -- no pick on this page
+            if nextCur == "" then
+                -- end of list
+                if didReset then
+                    -- already reset once, just pick anything not current
+                    for _, srv in ipairs(data) do
+                        if type(srv.id) == "string" and srv.id ~= game.JobId then
+                            pick      = srv
+                            newCursor = ""
+                            break
+                        end
+                    end
+                    if pick then break end
+                    log("No servers at all")
+                    TeleportService:Teleport(PlaceId, LP)
+                    return
+                end
+                -- reset visited list and start over from page 1
+                log("End of list - resetting visited")
+                visited   = {}
+                visited[game.JobId] = true
+                newCursor = ""
+                didReset  = true
+            else
+                newCursor = nextCur
+            end
+        end
+        task.wait(0.05)
+    end
+
+    if not pick then
+        log("Gave up after " .. tries .. " tries - plain Teleport")
+        saveV(visited, "")
+        TeleportService:Teleport(PlaceId, LP)
+        return
+    end
+
+    -- mark picked server as visited and save EVERYTHING before teleporting
+    visited[pick.id] = true
+    saveV(visited, newCursor)
+
+    log("HOP -> " .. pick.id .. " | " .. (pick.playing or 0) .. "p | tries=" .. tries)
+
+    TeleportService:TeleportToPlaceInstance(PlaceId, pick.id, LP)
+
+    -- fallback if didn't fire in 10s
+    task.wait(10)
+    TeleportService:Teleport(PlaceId, LP)
+end
+
+-- ================================================================
+-- WEBHOOK
+-- ================================================================
+local function sendWebhook(val, name, rawText, jobId)
+    local valStr  = fmtVal(val) .. "/s"
+    local joinCmd = string.format(
+        "game:GetService('TeleportService'):TeleportToPlaceInstance(%d,'%s')", PlaceId, jobId)
+    local ok, body = pcall(function()
+        return HttpService:JSONEncode({
+            username = "Banana Server Hop",
+            embeds   = {{
+                title  = "SERVER FOUND",
+                color  = 3461080,
+                fields = {
+                    {name="Value",        value=valStr,                        inline=true},
+                    {name="Name",         value=name,                          inline=true},
+                    {name="Raw",          value=rawText,                       inline=false},
+                    {name="Server ID",    value="`"..jobId.."`",               inline=false},
+                    {name="Join Command", value="```lua\n"..joinCmd.."\n```",  inline=false},
+                },
+                footer = {text = "Banana Server Hop v20"}
+            }}
+        })
+    end)
+    if not ok then return end
+    local h = {["Content-Type"] = "application/json"}
+    local payload = {Url=WEBHOOK_URL, Method="POST", Headers=h, Body=body}
+    -- try every known executor request function
+    pcall(function() request(payload) end)
+    pcall(function() http_request(payload) end)
+    local syn = rawget(_G, "syn")
+    if syn and syn.request then pcall(function() syn.request(payload) end) end
+    local http = rawget(_G, "http")
+    if http and http.request then pcall(function() http.request(payload) end) end
+end
+
+-- ================================================================
+-- SOUND
+-- ================================================================
+local snd = Instance.new("Sound", SoundService)
+snd.SoundId      = "rbxassetid://140681339179745"
+snd.Volume       = 10
+snd.RollOffMaxDistance = 0
+snd.TimePosition = 0
+local function playAlert()
+    pcall(function()
+        snd:Stop()
+        snd.TimePosition = 0
+        snd:Play()
+        -- stop after 2 seconds so only the first 2s play
+        task.delay(2, function()
+            pcall(function() snd:Stop() end)
+        end)
+    end)
+end
+
+-- ================================================================
+-- HISTORY  (survives teleports via getgenv)
+-- ================================================================
+local history = _loaded_history
+
+local function pushHistory(val, name, plrs)
+    table.insert(history, 1, {val=val, name=name, plrs=plrs or 0})
+    if #history > 12 then table.remove(history) end
+    saveState()
+end
+
+-- ================================================================
+-- GUI  - beautiful dark card, mobile-friendly, fully draggable
+-- ================================================================
+local W  = isMobile and 320 or 304
+local H  = 574
 
 local SG = Instance.new("ScreenGui")
 SG.Name           = "BSH_Main"
 SG.DisplayOrder   = 1000
 SG.ResetOnSpawn   = false
-SG.IgnoreGuiInset = true
+SG.IgnoreGuiInset = false
+SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 SG.Parent         = CoreGui
 
--- outer glow layers
+-- glow rings
 local GlowA = Instance.new("Frame", SG)
-GlowA.Size                   = U2(0, W+28, 0, 452)
-GlowA.Position               = U2(0, 16, 0, 16)
-GlowA.BackgroundColor3       = C3(0, 195, 115)
-GlowA.BackgroundTransparency = 0.9
+GlowA.Size                   = U2(0, W+36, 0, H+36)
+GlowA.Position               = U2(0, 12, 0, 12)
+GlowA.BackgroundColor3       = C3(0, 200, 118)
+GlowA.BackgroundTransparency = 0.87
 GlowA.BorderSizePixel        = 0
-Instance.new("UICorner", GlowA).CornerRadius = UD(0, 24)
+Instance.new("UICorner", GlowA).CornerRadius = UD(0, 28)
 
 local GlowB = Instance.new("Frame", SG)
-GlowB.Size                   = U2(0, W+12, 0, 438)
-GlowB.Position               = U2(0, 24, 0, 24)
-GlowB.BackgroundColor3       = C3(0, 155, 90)
-GlowB.BackgroundTransparency = 0.93
+GlowB.Size                   = U2(0, W+16, 0, H+16)
+GlowB.Position               = U2(0, 22, 0, 22)
+GlowB.BackgroundColor3       = C3(0, 160, 94)
+GlowB.BackgroundTransparency = 0.92
 GlowB.BorderSizePixel        = 0
-Instance.new("UICorner", GlowB).CornerRadius = UD(0, 20)
+Instance.new("UICorner", GlowB).CornerRadius = UD(0, 24)
 
 -- main card
 local Card = Instance.new("Frame", SG)
 Card.Name             = "BSH_Card"
-Card.Size             = U2(0, W, 0, 426)
+Card.Size             = U2(0, W, 0, H)
 Card.Position         = U2(0, 30, 0, 30)
 Card.BackgroundColor3 = C3(5, 7, 13)
 Card.BorderSizePixel  = 0
 Card.ClipsDescendants = true
 Card.Active           = true
-Instance.new("UICorner", Card).CornerRadius = UD(0, 16)
+Instance.new("UICorner", Card).CornerRadius = UD(0, 18)
 local CardBorder = Instance.new("UIStroke", Card)
-CardBorder.Color     = C3(18, 30, 52)
+CardBorder.Color     = C3(14, 24, 44)
 CardBorder.Thickness = 1.5
 
--- top accent bar (3-color gradient)
+-- animated 3-stop accent bar
 local AccBar = Instance.new("Frame", Card)
 AccBar.Size             = U2(1, 0, 0, 3)
 AccBar.BackgroundColor3 = C3(0, 210, 128)
@@ -263,74 +516,74 @@ AccBar.BorderSizePixel  = 0
 local AccGrad = Instance.new("UIGradient", AccBar)
 AccGrad.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0,    C3(0,   148, 255)),
-    ColorSequenceKeypoint.new(0.45, C3(0,   218, 132)),
-    ColorSequenceKeypoint.new(1,    C3(120,  52, 255))
+    ColorSequenceKeypoint.new(0.45, C3(0,   220, 132)),
+    ColorSequenceKeypoint.new(1,    C3(118,  52, 255))
 })
+TweenService:Create(AccGrad, TI(4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Rotation=360}):Play()
 
--- header
+-- ── HEADER ──────────────────────────────────────────────────
 local Header = Instance.new("Frame", Card)
-Header.Size               = U2(1, 0, 0, 52)
+Header.Size               = U2(1, 0, 0, 58)
 Header.Position           = U2(0, 0, 0, 3)
 Header.BackgroundTransparency = 1
 
--- live dot
+-- live indicator dot
 local Dot = Instance.new("Frame", Header)
-Dot.Size             = U2(0, 8, 0, 8)
-Dot.Position         = U2(0, 15, 0.5, -4)
-Dot.BackgroundColor3 = C3(30, 48, 78)
+Dot.Size             = U2(0, 9, 0, 9)
+Dot.Position         = U2(0, 16, 0.5, -4)
+Dot.BackgroundColor3 = C3(26, 42, 70)
 Dot.BorderSizePixel  = 0
 Instance.new("UICorner", Dot).CornerRadius = UD(1, 0)
 
--- title
 local TitleL = Instance.new("TextLabel", Header)
-TitleL.Size               = U2(1, -110, 0, 22)
-TitleL.Position           = U2(0, 30, 0, 8)
+TitleL.Size               = U2(1, -118, 0, 22)
+TitleL.Position           = U2(0, 33, 0, 10)
 TitleL.BackgroundTransparency = 1
 TitleL.Font               = Enum.Font.GothamBold
-TitleL.TextSize           = 13
+TitleL.TextSize           = 14
 TitleL.Text               = "BANANA  SERVER HOP"
-TitleL.TextColor3         = C3(188, 210, 255)
+TitleL.TextColor3         = C3(188, 212, 255)
 TitleL.TextXAlignment     = Enum.TextXAlignment.Left
 
 local SubL = Instance.new("TextLabel", Header)
-SubL.Size               = U2(1, -110, 0, 12)
-SubL.Position           = U2(0, 30, 0, 32)
+SubL.Size               = U2(1, -118, 0, 13)
+SubL.Position           = U2(0, 33, 0, 34)
 SubL.BackgroundTransparency = 1
 SubL.Font               = Enum.Font.Gotham
 SubL.TextSize           = 9
-SubL.Text               = "v19  |  drag to move"
-SubL.TextColor3         = C3(30, 50, 82)
+SubL.Text               = "v20  |  drag header  |  ] toggle  \\ hop  RShift hide"
+SubL.TextColor3         = C3(24, 42, 70)
 SubL.TextXAlignment     = Enum.TextXAlignment.Left
 
 -- hop counter pill
 local HopPill = Instance.new("Frame", Header)
-HopPill.Size             = U2(0, 86, 0, 26)
-HopPill.Position         = U2(1, -98, 0.5, -13)
-HopPill.BackgroundColor3 = C3(8, 14, 26)
+HopPill.Size             = U2(0, 92, 0, 28)
+HopPill.Position         = U2(1, -102, 0.5, -14)
+HopPill.BackgroundColor3 = C3(6, 11, 22)
 HopPill.BorderSizePixel  = 0
-Instance.new("UICorner", HopPill).CornerRadius = UD(0, 13)
+Instance.new("UICorner", HopPill).CornerRadius = UD(0, 14)
 local HopStroke = Instance.new("UIStroke", HopPill)
-HopStroke.Color     = C3(0, 118, 72)
+HopStroke.Color     = C3(0, 112, 68)
 HopStroke.Thickness = 1.2
-
 local HopL = Instance.new("TextLabel", HopPill)
 HopL.Size               = U2(1, 0, 1, 0)
 HopL.BackgroundTransparency = 1
 HopL.Font               = Enum.Font.GothamBold
 HopL.TextSize           = 10
 HopL.Text               = "HOPS: 0"
-HopL.TextColor3         = C3(0, 188, 112)
+HopL.TextColor3         = C3(0, 182, 108)
 
--- drag
+-- drag support (mouse + touch)
 local dragOn  = false
-local dragOff = Vector2.new()
+local dragOff = V2()
 Header.InputBegan:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1
     or i.UserInputType == Enum.UserInputType.Touch then
         dragOn  = true
-        dragOff = Vector2.new(
+        dragOff = V2(
             i.Position.X - Card.AbsolutePosition.X,
-            i.Position.Y - Card.AbsolutePosition.Y)
+            i.Position.Y - Card.AbsolutePosition.Y
+        )
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
@@ -340,8 +593,8 @@ UserInputService.InputChanged:Connect(function(i)
         local x = i.Position.X - dragOff.X
         local y = i.Position.Y - dragOff.Y
         Card.Position  = U2(0, x, 0, y)
-        GlowA.Position = U2(0, x-14, 0, y-14)
-        GlowB.Position = U2(0, x-6,  0, y-6)
+        GlowA.Position = U2(0, x-18, 0, y-18)
+        GlowB.Position = U2(0, x-8,  0, y-8)
     end
 end)
 UserInputService.InputEnded:Connect(function(i)
@@ -351,12 +604,12 @@ UserInputService.InputEnded:Connect(function(i)
     end
 end)
 
--- helpers
+-- ── HELPERS ─────────────────────────────────────────────────
 local function mkDiv(y)
     local d = Instance.new("Frame", Card)
     d.Size             = U2(1, -24, 0, 1)
     d.Position         = U2(0, 12, 0, y)
-    d.BackgroundColor3 = C3(14, 22, 38)
+    d.BackgroundColor3 = C3(11, 19, 34)
     d.BorderSizePixel  = 0
 end
 
@@ -368,180 +621,295 @@ local function mkCap(y, txt)
     l.Font               = Enum.Font.GothamBold
     l.TextSize           = 8
     l.Text               = txt
-    l.TextColor3         = C3(0, 132, 82)
+    l.TextColor3         = C3(0, 128, 78)
     l.TextXAlignment     = Enum.TextXAlignment.Left
     return l
 end
 
-mkDiv(55)
+local function mkBtn(parent, x, y, w, h, bg_r, bg_g, bg_b, txt, txt_r, txt_g, txt_b)
+    local b = Instance.new("TextButton", parent)
+    b.Size             = U2(0, w, 0, h)
+    b.Position         = U2(0, x, 0, y)
+    b.BackgroundColor3 = C3(bg_r, bg_g, bg_b)
+    b.BorderSizePixel  = 0
+    b.Font             = Enum.Font.GothamBold
+    b.TextSize         = isMobile and 12 or 11
+    b.Text             = txt
+    b.TextColor3       = C3(txt_r, txt_g, txt_b)
+    b.AutoButtonColor  = false
+    Instance.new("UICorner", b).CornerRadius = UD(0, 8)
+    return b
+end
 
--- TARGET INPUT ROW
-mkCap(63, "TARGET VALUE  -  stop when brainrot exceeds this")
+mkDiv(61)
+
+-- ── TARGET INPUT ─────────────────────────────────────────────
+mkCap(69, "MIN VALUE  -  stop when brainrot exceeds this")
 
 local IFrm = Instance.new("Frame", Card)
-IFrm.Size             = U2(1, -24, 0, 36)
-IFrm.Position         = U2(0, 12, 0, 76)
-IFrm.BackgroundColor3 = C3(9, 13, 23)
+IFrm.Size             = U2(1, -24, 0, isMobile and 44 or 38)
+IFrm.Position         = U2(0, 12, 0, 82)
+IFrm.BackgroundColor3 = C3(8, 12, 22)
 IFrm.BorderSizePixel  = 0
-Instance.new("UICorner", IFrm).CornerRadius = UD(0, 9)
+Instance.new("UICorner", IFrm).CornerRadius = UD(0, 10)
 local IStroke = Instance.new("UIStroke", IFrm)
-IStroke.Color     = C3(0, 118, 72)
-IStroke.Thickness = 1.2
+IStroke.Color     = C3(0, 112, 68)
+IStroke.Thickness = 1.3
 
 local DolL = Instance.new("TextLabel", IFrm)
-DolL.Size               = U2(0, 24, 1, 0)
+DolL.Size               = U2(0, 28, 1, 0)
 DolL.BackgroundTransparency = 1
 DolL.Font               = Enum.Font.GothamBold
-DolL.TextSize           = 16
+DolL.TextSize           = isMobile and 19 or 17
 DolL.Text               = "$"
-DolL.TextColor3         = C3(0, 168, 105)
+DolL.TextColor3         = C3(0, 168, 104)
 
 local InputBox = Instance.new("TextBox", IFrm)
-InputBox.Size             = U2(1, -30, 1, 0)
-InputBox.Position         = U2(0, 24, 0, 0)
+InputBox.Size             = U2(1, -34, 1, 0)
+InputBox.Position         = U2(0, 28, 0, 0)
 InputBox.BackgroundTransparency = 1
 InputBox.Font             = Enum.Font.GothamBold
-InputBox.TextSize         = 16
+InputBox.TextSize         = isMobile and 19 or 17
 InputBox.PlaceholderText  = "30m"
-InputBox.PlaceholderColor3 = C3(24, 38, 62)
-InputBox.TextColor3       = C3(205, 228, 255)
+InputBox.PlaceholderColor3 = C3(22, 35, 58)
+InputBox.TextColor3       = C3(198, 224, 255)
 InputBox.ClearTextOnFocus = false
 InputBox.BorderSizePixel  = 0
 InputBox.Text             = valToStr(Cfg.targetValue)
 
 local targetValue = Cfg.targetValue
+
 InputBox.FocusLost:Connect(function()
     local v = parseInput(InputBox.Text)
     if v > 0 then
-        targetValue     = v
-        Cfg.targetValue = v
+        targetValue       = v
+        Cfg.targetValue   = v
         saveCfg()
-        TweenService:Create(IStroke, TI(0.15), {Color=C3(0, 188, 115)}):Play()
-        task.delay(0.6, function() IStroke.Color = C3(0, 118, 72) end)
+        TweenService:Create(IStroke, TI(0.15), {Color=C3(0, 192, 118)}):Play()
+        task.delay(0.5, function() IStroke.Color = C3(0, 112, 68) end)
     else
         InputBox.Text = valToStr(Cfg.targetValue)
-        TweenService:Create(IStroke, TI(0.15), {Color=C3(185, 36, 36)}):Play()
-        task.delay(1, function() IStroke.Color = C3(0, 118, 72) end)
+        TweenService:Create(IStroke, TI(0.15), {Color=C3(192, 36, 36)}):Play()
+        task.delay(1, function() IStroke.Color = C3(0, 112, 68) end)
     end
 end)
 
-mkDiv(118)
+local IBottom = isMobile and 126 or 120
+mkDiv(IBottom)
 
--- STATUS AREA
+-- ── STATUS ───────────────────────────────────────────────────
 local StatL = Instance.new("TextLabel", Card)
 StatL.Size               = U2(1, -24, 0, 22)
-StatL.Position           = U2(0, 12, 0, 126)
+StatL.Position           = U2(0, 12, 0, IBottom + 8)
 StatL.BackgroundTransparency = 1
 StatL.Font               = Enum.Font.GothamBold
-StatL.TextSize           = 13
+StatL.TextSize           = isMobile and 14 or 13
 StatL.Text               = "IDLE"
-StatL.TextColor3         = C3(34, 52, 82)
+StatL.TextColor3         = C3(30, 48, 78)
 StatL.TextXAlignment     = Enum.TextXAlignment.Left
 StatL.TextTruncate       = Enum.TextTruncate.AtEnd
 
 local BestL = Instance.new("TextLabel", Card)
-BestL.Size               = U2(1, -24, 0, 13)
-BestL.Position           = U2(0, 12, 0, 150)
+BestL.Size               = U2(1, -24, 0, 14)
+BestL.Position           = U2(0, 12, 0, IBottom + 32)
 BestL.BackgroundTransparency = 1
 BestL.Font               = Enum.Font.Gotham
-BestL.TextSize           = 10
+BestL.TextSize           = isMobile and 11 or 10
 BestL.Text               = "last seen: -"
-BestL.TextColor3         = C3(28, 44, 72)
+BestL.TextColor3         = C3(24, 40, 68)
 BestL.TextXAlignment     = Enum.TextXAlignment.Left
 BestL.TextTruncate       = Enum.TextTruncate.AtEnd
 
 -- progress bar
-local BarBG = Instance.new("Frame", Card)
+local BarY   = IBottom + 50
+local BarBG  = Instance.new("Frame", Card)
 BarBG.Size             = U2(1, -24, 0, 5)
-BarBG.Position         = U2(0, 12, 0, 167)
-BarBG.BackgroundColor3 = C3(10, 16, 30)
+BarBG.Position         = U2(0, 12, 0, BarY)
+BarBG.BackgroundColor3 = C3(9, 14, 27)
 BarBG.BorderSizePixel  = 0
 Instance.new("UICorner", BarBG).CornerRadius = UD(1, 0)
 
 local Bar = Instance.new("Frame", BarBG)
 Bar.Size             = U2(0, 0, 1, 0)
-Bar.BackgroundColor3 = C3(0, 200, 122)
+Bar.BackgroundColor3 = C3(0, 198, 120)
 Bar.BorderSizePixel  = 0
 Instance.new("UICorner", Bar).CornerRadius = UD(1, 0)
 local BarGrad = Instance.new("UIGradient", Bar)
 BarGrad.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0, C3(0, 148, 255)),
-    ColorSequenceKeypoint.new(1, C3(0, 212, 125))
+    ColorSequenceKeypoint.new(1, C3(0, 212, 126))
 })
 
 local function setBar(f)
     Bar.Size = U2(math.clamp(f, 0, 1), 0, 1, 0)
 end
 
-mkDiv(178)
+mkDiv(BarY + 11)
 
--- START / STOP BUTTON
+-- ── START / STOP ─────────────────────────────────────────────
+local BtnY    = BarY + 19
+local BtnH    = isMobile and 50 or 44
 local StartBtn = Instance.new("TextButton", Card)
-StartBtn.Size             = U2(1, -24, 0, 42)
-StartBtn.Position         = U2(0, 12, 0, 186)
-StartBtn.BackgroundColor3 = C3(0, 168, 108)
+StartBtn.Size             = U2(1, -24, 0, BtnH)
+StartBtn.Position         = U2(0, 12, 0, BtnY)
+StartBtn.BackgroundColor3 = C3(0, 162, 105)
 StartBtn.BorderSizePixel  = 0
 StartBtn.Font             = Enum.Font.GothamBold
-StartBtn.TextSize         = 15
+StartBtn.TextSize         = isMobile and 17 or 15
 StartBtn.Text             = "START HUNTING"
-StartBtn.TextColor3       = C3(0, 9, 5)
+StartBtn.TextColor3       = C3(0, 8, 5)
 StartBtn.AutoButtonColor  = false
-Instance.new("UICorner", StartBtn).CornerRadius = UD(0, 10)
+Instance.new("UICorner", StartBtn).CornerRadius = UD(0, 11)
 local StartGrad = Instance.new("UIGradient", StartBtn)
 StartGrad.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0, C3(0,  208, 140)),
     ColorSequenceKeypoint.new(1, C3(0,  168, 255))
 })
-StartGrad.Rotation = 118
+StartGrad.Rotation = 120
 
-mkDiv(236)
+mkDiv(BtnY + BtnH + 8)
 
--- FORCE HOP
-local ForceBtn = Instance.new("TextButton", Card)
-ForceBtn.Size             = U2(1, -24, 0, 30)
-ForceBtn.Position         = U2(0, 12, 0, 244)
-ForceBtn.BackgroundColor3 = C3(8, 16, 34)
-ForceBtn.BorderSizePixel  = 0
-ForceBtn.Font             = Enum.Font.GothamBold
-ForceBtn.TextSize         = 11
-ForceBtn.Text             = "FORCE HOP NOW"
-ForceBtn.TextColor3       = C3(58, 138, 255)
-ForceBtn.AutoButtonColor  = false
-Instance.new("UICorner", ForceBtn).CornerRadius = UD(0, 8)
-Instance.new("UIStroke", ForceBtn).Color        = C3(16, 40, 84)
+-- ── FORCE HOP  +  HIDE ───────────────────────────────────────
+local Row2Y  = BtnY + BtnH + 16
+local Row2H  = isMobile and 40 or 32
+local Col1W  = math.floor((W - 24 - 8) * 0.62)
+local Col2W  = W - 24 - 8 - Col1W
 
-mkDiv(282)
+local ForceBtn = mkBtn(Card, 12, Row2Y, Col1W, Row2H, 7, 14, 30, "FORCE HOP  [\\]", 52, 132, 255)
+Instance.new("UIStroke", ForceBtn).Color = C3(12, 36, 80)
 
--- BLACKLIST + WHITELIST side by side
-local BLBtn = Instance.new("TextButton", Card)
-BLBtn.Size             = U2(0.5, -16, 0, 30)
-BLBtn.Position         = U2(0, 12, 0, 290)
-BLBtn.BackgroundColor3 = C3(32, 8, 8)
-BLBtn.BorderSizePixel  = 0
-BLBtn.Font             = Enum.Font.GothamBold
-BLBtn.TextSize         = 10
-BLBtn.Text             = "BLACKLIST (" .. #Cfg.blacklist .. ")"
-BLBtn.TextColor3       = C3(205, 58, 58)
-BLBtn.AutoButtonColor  = false
-Instance.new("UICorner", BLBtn).CornerRadius = UD(0, 8)
-Instance.new("UIStroke", BLBtn).Color        = C3(72, 16, 16)
+local HideBtn = mkBtn(Card, 12 + Col1W + 8, Row2Y, Col2W, Row2H, 7, 14, 30, "HIDE", 95, 115, 155)
+Instance.new("UIStroke", HideBtn).Color = C3(12, 24, 46)
 
-local WLBtn = Instance.new("TextButton", Card)
-WLBtn.Size             = U2(0.5, -16, 0, 30)
-WLBtn.Position         = U2(0.5, 4, 0, 290)
-WLBtn.BackgroundColor3 = C3(8, 32, 14)
-WLBtn.BorderSizePixel  = 0
-WLBtn.Font             = Enum.Font.GothamBold
-WLBtn.TextSize         = 10
-WLBtn.Text             = "WHITELIST (" .. #Cfg.whitelist .. ")"
-WLBtn.TextColor3       = C3(58, 195, 95)
-WLBtn.AutoButtonColor  = false
-Instance.new("UICorner", WLBtn).CornerRadius = UD(0, 8)
-Instance.new("UIStroke", WLBtn).Color        = C3(16, 72, 28)
+mkDiv(Row2Y + Row2H + 8)
 
-mkDiv(328)
+-- ── BLACKLIST / WHITELIST ────────────────────────────────────
+local ListY  = Row2Y + Row2H + 16
+local ListH  = isMobile and 38 or 30
+local HalfW  = math.floor((W - 24 - 8) / 2)
 
--- FOOTER INFO
+local BLBtn = mkBtn(Card, 12, ListY, HalfW, ListH, 28, 6, 6,
+    "BLACKLIST (" .. #Cfg.blacklist .. ")", 200, 52, 52)
+Instance.new("UIStroke", BLBtn).Color = C3(68, 12, 12)
+
+local WLBtn = mkBtn(Card, 12 + HalfW + 8, ListY, HalfW, ListH, 6, 28, 12,
+    "WHITELIST (" .. #Cfg.whitelist .. ")", 52, 192, 88)
+Instance.new("UIStroke", WLBtn).Color = C3(12, 68, 24)
+
+mkDiv(ListY + ListH + 8)
+
+-- ── RECENT SERVERS ───────────────────────────────────────────
+local HistCapY = ListY + ListH + 16
+local CapRow   = Instance.new("Frame", Card)
+CapRow.Size               = U2(1, -24, 0, 14)
+CapRow.Position           = U2(0, 12, 0, HistCapY)
+CapRow.BackgroundTransparency = 1
+
+local HistCap = Instance.new("TextLabel", CapRow)
+HistCap.Size               = U2(0.6, 0, 1, 0)
+HistCap.BackgroundTransparency = 1
+HistCap.Font               = Enum.Font.GothamBold
+HistCap.TextSize           = 8
+HistCap.Text               = "RECENT SERVERS"
+HistCap.TextColor3         = C3(0, 128, 78)
+HistCap.TextXAlignment     = Enum.TextXAlignment.Left
+
+local HistCnt = Instance.new("TextLabel", CapRow)
+HistCnt.Size               = U2(0.4, 0, 1, 0)
+HistCnt.Position           = U2(0.6, 0, 0, 0)
+HistCnt.BackgroundTransparency = 1
+HistCnt.Font               = Enum.Font.Gotham
+HistCnt.TextSize           = 8
+HistCnt.Text               = "0 entries"
+HistCnt.TextColor3         = C3(20, 38, 68)
+HistCnt.TextXAlignment     = Enum.TextXAlignment.Right
+
+local HistH   = 98
+local HistFrm = Instance.new("Frame", Card)
+HistFrm.Size             = U2(1, -24, 0, HistH)
+HistFrm.Position         = U2(0, 12, 0, HistCapY + 16)
+HistFrm.BackgroundColor3 = C3(7, 10, 20)
+HistFrm.BorderSizePixel  = 0
+Instance.new("UICorner", HistFrm).CornerRadius = UD(0, 9)
+Instance.new("UIStroke", HistFrm).Color        = C3(10, 18, 34)
+
+local HistScroll = Instance.new("ScrollingFrame", HistFrm)
+HistScroll.Size                 = U2(1, -6, 1, -6)
+HistScroll.Position             = U2(0, 3, 0, 3)
+HistScroll.BackgroundTransparency = 1
+HistScroll.BorderSizePixel      = 0
+HistScroll.ScrollBarThickness   = 2
+HistScroll.ScrollBarImageColor3 = C3(0, 112, 68)
+HistScroll.CanvasSize           = U2(0, 0, 0, 0)
+HistScroll.AutomaticCanvasSize  = Enum.AutomaticSize.Y
+
+local HistLayout = Instance.new("UIListLayout", HistScroll)
+HistLayout.SortOrder = Enum.SortOrder.LayoutOrder
+HistLayout.Padding   = UDim.new(0, 1)
+
+local function refreshHistory()
+    for _, c in ipairs(HistScroll:GetChildren()) do
+        if not c:IsA("UIListLayout") then c:Destroy() end
+    end
+    HistCnt.Text = tostring(#history) .. " entries"
+    if #history == 0 then
+        local e = Instance.new("TextLabel", HistScroll)
+        e.Size               = U2(1, 0, 0, 16)
+        e.BackgroundTransparency = 1
+        e.Font               = Enum.Font.Gotham
+        e.TextSize           = 9
+        e.Text               = "  No servers scanned yet"
+        e.TextColor3         = C3(24, 40, 68)
+        e.TextXAlignment     = Enum.TextXAlignment.Left
+        e.LayoutOrder        = 1
+        return
+    end
+    for i, h in ipairs(history) do
+        local row = Instance.new("Frame", HistScroll)
+        row.Size               = U2(1, 0, 0, 16)
+        row.BackgroundTransparency = 1
+        row.LayoutOrder        = i
+
+        local good = h.val >= targetValue
+
+        local vLbl = Instance.new("TextLabel", row)
+        vLbl.Size               = U2(0.38, 0, 1, 0)
+        vLbl.BackgroundTransparency = 1
+        vLbl.Font               = Enum.Font.GothamBold
+        vLbl.TextSize           = 9
+        vLbl.Text               = "  $" .. fmtVal(h.val) .. "/s"
+        vLbl.TextColor3         = good and C3(0, 188, 110) or C3(36, 56, 92)
+        vLbl.TextXAlignment     = Enum.TextXAlignment.Left
+
+        local nLbl = Instance.new("TextLabel", row)
+        nLbl.Size               = U2(0.42, 0, 1, 0)
+        nLbl.Position           = U2(0.38, 0, 0, 0)
+        nLbl.BackgroundTransparency = 1
+        nLbl.Font               = Enum.Font.Gotham
+        nLbl.TextSize           = 9
+        nLbl.Text               = h.name
+        nLbl.TextColor3         = C3(36, 56, 92)
+        nLbl.TextXAlignment     = Enum.TextXAlignment.Left
+        nLbl.TextTruncate       = Enum.TextTruncate.AtEnd
+
+        local pLbl = Instance.new("TextLabel", row)
+        pLbl.Size               = U2(0.2, 0, 1, 0)
+        pLbl.Position           = U2(0.8, 0, 0, 0)
+        pLbl.BackgroundTransparency = 1
+        pLbl.Font               = Enum.Font.Gotham
+        pLbl.TextSize           = 9
+        pLbl.Text               = (h.plrs or 0) .. "p"
+        pLbl.TextColor3         = C3(26, 42, 72)
+        pLbl.TextXAlignment     = Enum.TextXAlignment.Right
+    end
+end
+
+refreshHistory()
+
+local FooterTopY = HistCapY + 16 + HistH + 8
+mkDiv(FooterTopY)
+
+-- ── FOOTER LABELS ────────────────────────────────────────────
 local function mkFoot(y, txt, r, g, b)
     local l = Instance.new("TextLabel", Card)
     l.Size               = U2(1, -24, 0, 11)
@@ -550,71 +918,77 @@ local function mkFoot(y, txt, r, g, b)
     l.Font               = Enum.Font.Gotham
     l.TextSize           = 8
     l.Text               = txt
-    l.TextColor3         = C3(r or 14, g or 22, b or 40)
+    l.TextColor3         = C3(r or 10, g or 18, b or 34)
     l.TextXAlignment     = Enum.TextXAlignment.Left
     l.TextTruncate       = Enum.TextTruncate.AtEnd
     return l
 end
 
-local SaveStatusL = mkFoot(334, "", 14, 22, 40)
-local FootSrvL    = mkFoot(347, "server: " .. game.JobId, 12, 20, 36)
-mkFoot(360, "settings: " .. SETTINGS_FILE .. "  |  autorun: " .. (SCRIPT_SRC and "OK" or "MISSING"), 12, 20, 36)
+local SaveLbl = mkFoot(FooterTopY + 6,  "", 10, 18, 34)
+mkFoot(FooterTopY + 19, "server: " .. game.JobId, 10, 16, 30)
+mkFoot(FooterTopY + 32, "min players: " .. MIN_PLAYERS .. "  |  scan: " .. SCAN_MAX .. "s  |  load wait: " .. LOAD_WAIT .. "s", 10, 16, 30)
+mkFoot(FooterTopY + 45, "keybinds: ] toggle   \\ force hop   RShift hide", 10, 16, 30)
 
--- update save status label
-local function showSaveStatus(ok)
+local function showSaveResult(ok)
     if ok then
-        SaveStatusL.Text      = "settings saved"
-        SaveStatusL.TextColor3 = C3(0, 148, 88)
+        SaveLbl.Text      = "settings: saved to file"
+        SaveLbl.TextColor3 = C3(0, 142, 84)
     else
-        SaveStatusL.Text      = "save FAILED - writefile not available in this executor"
-        SaveStatusL.TextColor3 = C3(185, 58, 38)
+        SaveLbl.Text      = "settings: memory only  (writefile unavailable)"
+        SaveLbl.TextColor3 = C3(178, 132, 36)
     end
 end
 
--- ============================================================
--- LIST POPUP  (blacklist / whitelist editor)
--- ============================================================
+-- ── LIST POPUP ───────────────────────────────────────────────
+-- TextButton dim + Active card = never closes on mouse move
 local function mkListPopup(title, listRef, listKey, onSave)
     local Pop = Instance.new("ScreenGui")
     Pop.Name           = "BSH_Popup"
-    Pop.DisplayOrder   = 2000
+    Pop.DisplayOrder   = 3000
     Pop.ResetOnSpawn   = false
     Pop.IgnoreGuiInset = true
+    Pop.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     Pop.Parent         = CoreGui
 
-    -- dim overlay
-    local Dim = Instance.new("Frame", Pop)
-    Dim.Size                   = U2(1, 0, 1, 0)
-    Dim.BackgroundColor3       = C3(0, 0, 0)
-    Dim.BackgroundTransparency = 0.52
-    Dim.BorderSizePixel        = 0
+    local Dim = Instance.new("TextButton", Pop)
+    Dim.Size               = U2(1, 0, 1, 0)
+    Dim.BackgroundColor3   = C3(0, 0, 0)
+    Dim.BackgroundTransparency = 0.55
+    Dim.BorderSizePixel    = 0
+    Dim.Text               = ""
+    Dim.AutoButtonColor    = false
+    Dim.ZIndex             = 1
+    Dim.MouseButton1Click:Connect(function() Pop:Destroy() end)
 
-    -- popup card
+    local PW = isMobile and (W - 16) or 316
+    local PH = isMobile and 320 or 308
+
     local PC = Instance.new("Frame", Pop)
-    PC.Size             = U2(0, 310, 0, 295)
-    PC.Position         = U2(0.5, -155, 0.5, -147)
-    PC.BackgroundColor3 = C3(6, 8, 14)
+    PC.Size             = U2(0, PW, 0, PH)
+    PC.Position         = U2(0.5, -PW/2, 0.5, -PH/2)
+    PC.BackgroundColor3 = C3(6, 8, 15)
     PC.BorderSizePixel  = 0
     PC.Active           = true
-    Instance.new("UICorner", PC).CornerRadius = UD(0, 14)
-    local PCS = Instance.new("UIStroke", PC)
-    PCS.Color     = C3(18, 30, 52)
-    PCS.Thickness = 1.5
+    PC.ZIndex           = 2
+    Instance.new("UICorner", PC).CornerRadius = UD(0, 16)
+    Instance.new("UIStroke", PC).Color        = C3(14, 26, 48)
 
-    local PAcc = Instance.new("Frame", PC)
-    PAcc.Size             = U2(1, 0, 0, 2)
-    PAcc.BackgroundColor3 = C3(0, 188, 112)
-    PAcc.BorderSizePixel  = 0
+    local PAccBar = Instance.new("Frame", PC)
+    PAccBar.Size             = U2(1, 0, 0, 2)
+    PAccBar.BackgroundColor3 = C3(0, 188, 114)
+    PAccBar.BorderSizePixel  = 0
+    PAccBar.ZIndex           = 3
 
     local PTL = Instance.new("TextLabel", PC)
     PTL.Size               = U2(1, -32, 0, 28)
     PTL.Position           = U2(0, 16, 0, 10)
     PTL.BackgroundTransparency = 1
     PTL.Font               = Enum.Font.GothamBold
-    PTL.TextSize           = 13
+    PTL.TextSize           = isMobile and 15 or 14
     PTL.Text               = title
-    PTL.TextColor3         = C3(185, 208, 255)
+    PTL.TextColor3         = C3(178, 204, 255)
     PTL.TextXAlignment     = Enum.TextXAlignment.Left
+    PTL.ZIndex             = 3
 
     local PIL = Instance.new("TextLabel", PC)
     PIL.Size               = U2(1, -32, 0, 11)
@@ -622,66 +996,74 @@ local function mkListPopup(title, listRef, listKey, onSave)
     PIL.BackgroundTransparency = 1
     PIL.Font               = Enum.Font.Gotham
     PIL.TextSize           = 9
-    PIL.Text               = "One name per line. Saved to: " .. SETTINGS_FILE
-    PIL.TextColor3         = C3(38, 58, 95)
+    PIL.Text               = "One name per line. Saved automatically."
+    PIL.TextColor3         = C3(34, 54, 90)
     PIL.TextXAlignment     = Enum.TextXAlignment.Left
+    PIL.ZIndex             = 3
 
+    local PFH = PH - 115
     local PFrm = Instance.new("Frame", PC)
-    PFrm.Size             = U2(1, -32, 0, 162)
+    PFrm.Size             = U2(1, -32, 0, PFH)
     PFrm.Position         = U2(0, 16, 0, 55)
-    PFrm.BackgroundColor3 = C3(8, 12, 22)
+    PFrm.BackgroundColor3 = C3(7, 10, 20)
     PFrm.BorderSizePixel  = 0
+    PFrm.ZIndex           = 3
     Instance.new("UICorner", PFrm).CornerRadius = UD(0, 8)
-    Instance.new("UIStroke", PFrm).Color        = C3(16, 28, 50)
+    Instance.new("UIStroke", PFrm).Color        = C3(12, 24, 46)
 
     local PBox = Instance.new("TextBox", PFrm)
     PBox.Size               = U2(1, -12, 1, -12)
     PBox.Position           = U2(0, 6, 0, 6)
     PBox.BackgroundTransparency = 1
     PBox.Font               = Enum.Font.Gotham
-    PBox.TextSize           = 11
-    PBox.TextColor3         = C3(195, 218, 255)
+    PBox.TextSize           = isMobile and 13 or 11
+    PBox.TextColor3         = C3(188, 214, 255)
     PBox.BorderSizePixel    = 0
     PBox.ClearTextOnFocus   = false
     PBox.MultiLine          = true
     PBox.TextYAlignment     = Enum.TextYAlignment.Top
     PBox.Text               = table.concat(listRef, "\n")
+    PBox.ZIndex             = 4
 
-    local PSaveBtn = Instance.new("TextButton", PC)
-    PSaveBtn.Size             = U2(0.5, -10, 0, 30)
-    PSaveBtn.Position         = U2(0, 16, 0, 228)
-    PSaveBtn.BackgroundColor3 = C3(0, 132, 82)
-    PSaveBtn.BorderSizePixel  = 0
-    PSaveBtn.Font             = Enum.Font.GothamBold
-    PSaveBtn.TextSize         = 12
-    PSaveBtn.Text             = "SAVE"
-    PSaveBtn.TextColor3       = C3(0, 9, 5)
-    PSaveBtn.AutoButtonColor  = false
-    Instance.new("UICorner", PSaveBtn).CornerRadius = UD(0, 7)
+    local PSaveY = 55 + PFH + 8
+    local PS = Instance.new("TextButton", PC)
+    PS.Size             = U2(0.5, -10, 0, isMobile and 38 or 32)
+    PS.Position         = U2(0, 16, 0, PSaveY)
+    PS.BackgroundColor3 = C3(0, 128, 80)
+    PS.BorderSizePixel  = 0
+    PS.Font             = Enum.Font.GothamBold
+    PS.TextSize         = 12
+    PS.Text             = "SAVE"
+    PS.TextColor3       = C3(0, 8, 4)
+    PS.AutoButtonColor  = false
+    PS.ZIndex           = 3
+    Instance.new("UICorner", PS).CornerRadius = UD(0, 8)
 
-    local PCloseBtn = Instance.new("TextButton", PC)
-    PCloseBtn.Size             = U2(0.5, -10, 0, 30)
-    PCloseBtn.Position         = U2(0.5, 2, 0, 228)
-    PCloseBtn.BackgroundColor3 = C3(42, 10, 10)
-    PCloseBtn.BorderSizePixel  = 0
-    PCloseBtn.Font             = Enum.Font.GothamBold
-    PCloseBtn.TextSize         = 12
-    PCloseBtn.Text             = "CLOSE"
-    PCloseBtn.TextColor3       = C3(198, 58, 58)
-    PCloseBtn.AutoButtonColor  = false
-    Instance.new("UICorner", PCloseBtn).CornerRadius = UD(0, 7)
+    local PCl = Instance.new("TextButton", PC)
+    PCl.Size             = U2(0.5, -10, 0, isMobile and 38 or 32)
+    PCl.Position         = U2(0.5, 2, 0, PSaveY)
+    PCl.BackgroundColor3 = C3(38, 8, 8)
+    PCl.BorderSizePixel  = 0
+    PCl.Font             = Enum.Font.GothamBold
+    PCl.TextSize         = 12
+    PCl.Text             = "CLOSE"
+    PCl.TextColor3       = C3(192, 52, 52)
+    PCl.AutoButtonColor  = false
+    PCl.ZIndex           = 3
+    Instance.new("UICorner", PCl).CornerRadius = UD(0, 8)
 
-    local PStatusL = Instance.new("TextLabel", PC)
-    PStatusL.Size               = U2(1, -32, 0, 12)
-    PStatusL.Position           = U2(0, 16, 0, 268)
-    PStatusL.BackgroundTransparency = 1
-    PStatusL.Font               = Enum.Font.Gotham
-    PStatusL.TextSize           = 9
-    PStatusL.Text               = ""
-    PStatusL.TextColor3         = C3(0, 178, 108)
-    PStatusL.TextXAlignment     = Enum.TextXAlignment.Center
+    local PSt = Instance.new("TextLabel", PC)
+    PSt.Size               = U2(1, -32, 0, 13)
+    PSt.Position           = U2(0, 16, 0, PSaveY + (isMobile and 40 or 34))
+    PSt.BackgroundTransparency = 1
+    PSt.Font               = Enum.Font.Gotham
+    PSt.TextSize           = 9
+    PSt.Text               = ""
+    PSt.TextColor3         = C3(0, 172, 106)
+    PSt.TextXAlignment     = Enum.TextXAlignment.Center
+    PSt.ZIndex             = 3
 
-    PSaveBtn.MouseButton1Click:Connect(function()
+    PS.MouseButton1Click:Connect(function()
         local nl = {}
         for line in PBox.Text:gmatch("[^\n]+") do
             local t = line:match("^%s*(.-)%s*$")
@@ -691,41 +1073,45 @@ local function mkListPopup(title, listRef, listKey, onSave)
         local wrote = saveCfg()
         rebuildSets()
         onSave(nl)
-        if wrote ~= false then
-            PStatusL.Text      = "Saved " .. #nl .. " entries"
-            PStatusL.TextColor3 = C3(0, 178, 108)
-        else
-            PStatusL.Text      = "Saved in memory (writefile unavailable)"
-            PStatusL.TextColor3 = C3(185, 138, 38)
-        end
-        task.delay(1.2, function() Pop:Destroy() end)
+        PSt.Text      = "Saved " .. #nl .. " entries" .. (wrote and "" or " (memory only)")
+        PSt.TextColor3 = wrote and C3(0, 172, 106) or C3(178, 132, 36)
+        task.delay(1.2, function()
+            if Pop and Pop.Parent then Pop:Destroy() end
+        end)
     end)
 
-    PCloseBtn.MouseButton1Click:Connect(function() Pop:Destroy() end)
-    Dim.InputBegan:Connect(function() Pop:Destroy() end)
+    PCl.MouseButton1Click:Connect(function() Pop:Destroy() end)
 end
 
 BLBtn.MouseButton1Click:Connect(function()
-    mkListPopup("BLACKLIST  -  skip these servers", Cfg.blacklist, "blacklist", function(l)
-        BLBtn.Text = "BLACKLIST (" .. #l .. ")"
-    end)
+    mkListPopup("BLACKLIST  -  skip these", Cfg.blacklist, "blacklist",
+        function(l) BLBtn.Text = "BLACKLIST (" .. #l .. ")" end)
 end)
 
 WLBtn.MouseButton1Click:Connect(function()
-    mkListPopup("WHITELIST  -  only stop for these", Cfg.whitelist, "whitelist", function(l)
-        WLBtn.Text = "WHITELIST (" .. #l .. ")"
-    end)
+    mkListPopup("WHITELIST  -  only stop for these", Cfg.whitelist, "whitelist",
+        function(l) WLBtn.Text = "WHITELIST (" .. #l .. ")" end)
 end)
 
--- ============================================================
+-- ================================================================
 -- LOGIC
--- ============================================================
+-- ================================================================
 local hunting  = false
-local hopCount = 0
+hopCount = _loaded_hopCount
+getgenv().BSH_HOP_COUNT = hopCount
+HopL.Text = "HOPS: " .. hopCount
 
 local function setStatus(txt, r, g, b)
     StatL.Text       = txt
     StatL.TextColor3 = C3(r, g, b)
+end
+
+local function getAnimalTarget(name)
+    local nl = name:lower()
+    for k, v in pairs(Cfg.customTargets) do
+        if k:lower() == nl then return v end
+    end
+    return targetValue
 end
 
 local function isWanted(name)
@@ -735,141 +1121,145 @@ local function isWanted(name)
     return true
 end
 
-local function stopHunt()
-    hunting        = false
-    Cfg.wasHunting = false
-    saveCfg()
-    StartBtn.Text       = "START HUNTING"
-    StartBtn.TextColor3 = C3(0, 9, 5)
+local function setGreenStart()
     StartGrad.Color = ColorSequence.new({
         ColorSequenceKeypoint.new(0, C3(0,  208, 140)),
         ColorSequenceKeypoint.new(1, C3(0,  168, 255))
     })
-    setStatus("STOPPED", 48, 62, 88)
+    StartBtn.Text       = "START HUNTING"
+    StartBtn.TextColor3 = C3(0, 8, 5)
+end
+
+local function setRedStop()
+    StartGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, C3(200, 28, 28)),
+        ColorSequenceKeypoint.new(1, C3(140, 12, 58))
+    })
+    StartBtn.Text       = "STOP HUNTING"
+    StartBtn.TextColor3 = C3(255, 192, 192)
+end
+
+local function stopHunt()
+    hunting             = false
+    Cfg.wasHunting      = false
+    getgenv().BSH_WAS_HUNTING = false
+    -- write false to file so fresh launch won't auto-start
+    saveState()
+    setGreenStart()
+    setStatus("STOPPED", 42, 58, 85)
     setBar(0)
-    Dot.BackgroundColor3 = C3(30, 48, 78)
+    Dot.BackgroundColor3 = C3(26, 42, 70)
 end
 
 local function doHop()
     hopCount = hopCount + 1
+    getgenv().BSH_HOP_COUNT = hopCount
     HopL.Text = "HOPS: " .. hopCount
-    local oldJob = game.JobId
-    queueSelf()
-    log("Hop #" .. hopCount .. " | current=" .. oldJob:sub(1,8))
-    -- keep retrying until JobId actually changes
-    local attempts = 0
-    while hunting and game.JobId == oldJob and attempts < 12 do
-        attempts = attempts + 1
-        pcall(function() TeleportService:Teleport(PlaceId, LP) end)
-        local t0 = tick()
-        while hunting and tick()-t0 < 4 and game.JobId == oldJob do
-            task.wait(0.2)
-        end
-    end
-    if game.JobId == oldJob then
-        log("Hop failed after " .. attempts .. " attempts - loop will retry")
-        task.wait(2)
-    else
-        log("Hopped to " .. game.JobId:sub(1,8))
-    end
+    log("Hop #" .. hopCount)
+    doTeleport()
+    local t0 = tick()
+    while hunting and tick() - t0 < 5 do task.wait(0.1) end
 end
 
 local function startHunt()
     if targetValue <= 0 then
-        setStatus("SET A TARGET VALUE FIRST", 198, 50, 50)
-        TweenService:Create(IStroke, TI(0.12), {Color=C3(185, 36, 36)}):Play()
-        task.delay(1.2, function() IStroke.Color = C3(0, 118, 72) end)
+        setStatus("SET A TARGET VALUE FIRST", 192, 46, 46)
+        TweenService:Create(IStroke, TI(0.12), {Color=C3(185, 34, 34)}):Play()
+        task.delay(1.2, function() IStroke.Color = C3(0, 112, 68) end)
         return
     end
-    hunting        = true
-    Cfg.wasHunting = true
+
+    hunting                   = true
+    Cfg.wasHunting            = true
+    getgenv().BSH_WAS_HUNTING = true
     saveCfg()
-    StartBtn.Text       = "STOP HUNTING"
-    StartBtn.TextColor3 = C3(255, 198, 198)
-    StartGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, C3(200, 30, 30)),
-        ColorSequenceKeypoint.new(1, C3(145, 14, 60))
-    })
+    setRedStop()
 
     task.spawn(function()
         while hunting do
 
-            -- STEP 1: wait for animals to appear
+            -- STEP 1: wait for animals
+            rebuildCache()
             local t0     = tick()
             local loaded = false
-            while hunting and tick()-t0 < LOAD_WAIT do
+            while hunting and tick() - t0 < LOAD_WAIT do
                 if hasAnimals() then loaded = true; break end
-                local rem = math.ceil(LOAD_WAIT - (tick()-t0))
-                setStatus("Loading... (" .. rem .. "s)", 40, 68, 118)
-                setBar((tick()-t0) / LOAD_WAIT)
-                task.wait(0.25)
+                setStatus("Waiting for server... (" .. math.ceil(LOAD_WAIT - (tick()-t0)) .. "s)", 36, 62, 108)
+                setBar((tick() - t0) / LOAD_WAIT)
+                task.wait(0.3)
             end
             if not hunting then break end
 
-            -- STEP 2: scan (max SCAN_MAX seconds, stops early if value settles)
+            -- STEP 2: scan
             local bv, bn, br = -1, "?", ""
-            local lastImp   = tick()
-            local scanStart = tick()
+            local lastImp    = tick()
+            local scanStart  = tick()
 
             if loaded then
-                while hunting and tick()-scanStart < SCAN_MAX do
+                while hunting and tick() - scanStart < SCAN_MAX do
                     local v, n, r = scanBest()
                     if v > bv then bv=v; bn=n; br=r; lastImp=tick() end
                     local el = tick() - scanStart
                     setBar(el / SCAN_MAX)
                     if bv > 0 then
-                        setStatus("$" .. fmtVal(bv) .. "/s  scanning...", 0, 155, 98)
+                        setStatus("$" .. fmtVal(bv) .. "/s  scanning...", 0, 150, 94)
                         BestL.Text       = bn .. "  " .. br
-                        BestL.TextColor3 = C3(44, 74, 118)
+                        BestL.TextColor3 = C3(40, 70, 112)
                     else
-                        setStatus("Scanning...", 0, 108, 72)
+                        setStatus("Scanning...", 0, 102, 68)
                     end
-                    if bv > 0 and tick()-lastImp > SCAN_SETTLE and el > 0.5 then break end
-                    task.wait(0.15)
+                    if bv > 0 and tick() - lastImp > SCAN_SETTLE and el > 0.4 then break end
+                    task.wait(0.25)
                 end
             else
-                setStatus("Nothing loaded - hopping", 72, 85, 115)
+                setStatus("Nothing loaded - hopping", 68, 80, 110)
             end
+
             if not hunting then break end
 
             setBar(1)
-            log("Scan done: " .. fmtVal(bv) .. "/s  " .. bn)
+            local numP = #Players:GetPlayers()
+            if bv > 0 then pushHistory(bv, bn, numP); refreshHistory() end
+            log("Scan: " .. fmtVal(bv) .. "/s  " .. bn)
 
-            -- STEP 3: decide
-            local wanted = isWanted(bn)
+            local animalTarget = getAnimalTarget(bn)
+            local wanted       = isWanted(bn)
 
-            if bv >= targetValue and wanted then
-                setStatus("FOUND!  " .. bn .. "  " .. br, 0, 245, 148)
+            if bv >= animalTarget and wanted then
+                setStatus("FOUND!  " .. bn .. "  " .. br, 0, 240, 144)
                 BestL.Text       = "STAYING:  " .. bn .. "  " .. br
-                BestL.TextColor3 = C3(0, 205, 128)
+                BestL.TextColor3 = C3(0, 200, 124)
                 setBar(1)
                 playAlert()
-                notify("Banana Found!", "$" .. fmtVal(bv) .. "/s  -  " .. bn)
-                for _ = 1, 6 do
-                    TweenService:Create(CardBorder, TI(0.1), {Color=C3(0, 245, 138)}):Play()
-                    task.wait(0.13)
-                    TweenService:Create(CardBorder, TI(0.1), {Color=C3(18, 30, 52)}):Play()
-                    task.wait(0.13)
+                notify("Banana Found!", "$" .. fmtVal(bv) .. "/s  " .. bn)
+                if bv >= 30e6 then
+                    task.spawn(function() sendWebhook(bv, bn, br, game.JobId) end)
+                end
+                for _ = 1, 7 do
+                    TweenService:Create(CardBorder, TI(0.1), {Color=C3(0, 240, 134)}):Play()
+                    task.wait(0.12)
+                    TweenService:Create(CardBorder, TI(0.1), {Color=C3(14, 24, 44)}):Play()
+                    task.wait(0.12)
                 end
                 stopHunt()
                 break
             end
 
-            if bv >= targetValue and not wanted then
-                setStatus("SKIP (blacklisted): " .. bn, 118, 72, 34)
+            if bv >= animalTarget and not wanted then
+                setStatus("SKIP (blacklisted): " .. bn, 112, 68, 30)
                 BestL.Text       = "skipped: " .. bn
-                BestL.TextColor3 = C3(95, 60, 26)
+                BestL.TextColor3 = C3(90, 56, 22)
             end
 
-            if bv < targetValue then
+            if bv < animalTarget then
                 if bv > 0 then
-                    setStatus("$" .. fmtVal(bv) .. "/s  too low - hopping", 48, 88, 158)
+                    setStatus("$" .. fmtVal(bv) .. "/s  too low - hopping", 44, 82, 152)
                     BestL.Text       = "last: " .. bn .. "  " .. br
-                    BestL.TextColor3 = C3(28, 44, 72)
+                    BestL.TextColor3 = C3(24, 40, 68)
                 else
-                    setStatus("Nothing found - hopping", 44, 66, 112)
+                    setStatus("Nothing found - hopping", 40, 62, 106)
                     BestL.Text       = "last seen: -"
-                    BestL.TextColor3 = C3(24, 38, 65)
+                    BestL.TextColor3 = C3(20, 34, 60)
                 end
             end
 
@@ -883,13 +1273,28 @@ StartBtn.MouseButton1Click:Connect(function()
 end)
 
 ForceBtn.MouseButton1Click:Connect(function()
-    if not hunting then
-        setStatus("Force hopping...", 48, 98, 188)
-        task.spawn(doHop)
-    else
-        setStatus("Stop hunting first", 155, 68, 34)
+    if hunting then
+        setStatus("Stop hunting first", 148, 62, 30)
+        return
     end
+    task.spawn(function()
+        hopCount = hopCount + 1
+        getgenv().BSH_HOP_COUNT = hopCount
+        HopL.Text = "HOPS: " .. hopCount
+        log("Force hop #" .. hopCount)
+        doTeleport()
+    end)
 end)
+
+local guiVisible = true
+local function toggleGui()
+    guiVisible      = not guiVisible
+    Card.Visible    = guiVisible
+    GlowA.Visible   = guiVisible
+    GlowB.Visible   = guiVisible
+end
+
+HideBtn.MouseButton1Click:Connect(toggleGui)
 
 -- pulsing dot animation
 task.spawn(function()
@@ -898,24 +1303,57 @@ task.spawn(function()
         t = t + 0.05
         local a = (math.sin(t * 2.8) + 1) / 2
         if hunting then
-            Dot.BackgroundColor3 = C3(0, math.floor(165+a*90), math.floor(88+a*80))
-            HopStroke.Color      = C3(0, math.floor(98+a*78),  math.floor(58+a*50))
+            Dot.BackgroundColor3 = C3(0, math.floor(160+a*95), math.floor(84+a*88))
+            HopStroke.Color      = C3(0, math.floor(92+a*82),  math.floor(52+a*56))
         else
-            Dot.BackgroundColor3 = C3(30, 48, 78)
-            HopStroke.Color      = C3(0, 118, 72)
+            Dot.BackgroundColor3 = C3(26, 42, 70)
+            HopStroke.Color      = C3(0, 112, 68)
         end
         task.wait(0.05)
     end
 end)
 
--- show initial save capability
+-- ================================================================
+-- KEYBINDS  (skip on mobile, skip if typing in a TextBox)
+-- ================================================================
+if not isMobile then
+    UserInputService.InputBegan:Connect(function(i, gameProcessed)
+        if gameProcessed then return end
+        -- don't fire keybinds while user is typing
+        local focused = UserInputService:GetFocusedTextBox()
+        if focused then return end
+
+        local kc = i.KeyCode.Name
+        if kc == KB_TOGGLE then
+            if hunting then stopHunt() else startHunt() end
+        end
+        if kc == KB_HOP then
+            ForceBtn.MouseButton1Click:Fire()
+        end
+        if kc == KB_HIDE then
+            toggleGui()
+        end
+    end)
+end
+
+-- ================================================================
+-- STARTUP
+-- ================================================================
 task.delay(0.5, function()
-    local testWrite = safeWrite("BSH_test.tmp", "1")
-    showSaveStatus(testWrite)
+    showSaveResult(saveCfg())
 end)
 
-log("v19 loaded | target=$" .. fmtVal(Cfg.targetValue) .. " | autorun=" .. (SCRIPT_SRC and "OK" or "MISSING - set JUNKIE_URL"))
-if Cfg.wasHunting then
-    log("wasHunting=true, auto-starting in 1.5s")
+-- Only auto-start if we arrived here via a previous hop (wasHunting flag)
+-- NOT on first-ever execution. If wasHunting was never set, it defaults
+-- to false, so a fresh execute will NOT auto-start.
+-- Auto-resume: check BOTH getgenv (fast, same session) and file (survives teleport)
+-- _loaded_wasHunting comes from the state file written just before teleporting
+local shouldAutoStart = (getgenv().BSH_WAS_HUNTING == true) or (_loaded_wasHunting == true)
+if shouldAutoStart then
+    log("Resuming hunt after teleport (hops so far: " .. hopCount .. ")")
     task.delay(1.5, startHunt)
+else
+    log("Fresh execute - not auto-starting")
 end
+
+log("v20 loaded | target=$" .. fmtVal(Cfg.targetValue) .. " | hops: " .. hopCount)
