@@ -305,96 +305,149 @@ local function getServers(cursor)
     return res.data, next
 end
 
+-- Pre-fetched pick: computed in background during scan so hop is instant
+local preFetchedPick      = nil
+local preFetchedNewCursor = ""
+local preFetchedVisited   = nil
+local preFetching         = false
+
+local function fetchNextPick()
+    -- Run in background. Loads visited from file, walks pages,
+    -- finds the best unvisited server, stores result ready for hop.
+    if preFetching then return end
+    preFetching = true
+    task.spawn(function()
+        local visited  = loadV()
+        local cursor   = loadCursor()
+        visited[game.JobId] = true
+
+        local pick      = nil
+        local newCursor = cursor
+        local tries     = 0
+        local didReset  = false
+
+        while tries < 30 do
+            tries = tries + 1
+            local data, nextCur = getServers(newCursor)
+            if not data then
+                task.wait(0.5)
+            else
+                for _, srv in ipairs(data) do
+                    if type(srv.id) == "string"
+                    and srv.id ~= game.JobId
+                    and not visited[srv.id]
+                    and type(srv.playing) == "number"
+                    and srv.playing >= MIN_PLAYERS then
+                        pick      = srv
+                        newCursor = nextCur
+                        break
+                    end
+                end
+                if pick then break end
+                if nextCur == "" then
+                    if didReset then
+                        -- pick literally anything
+                        for _, srv in ipairs(data) do
+                            if type(srv.id) == "string" and srv.id ~= game.JobId then
+                                pick = srv; newCursor = ""; break
+                            end
+                        end
+                        break
+                    end
+                    visited = {}; visited[game.JobId] = true
+                    newCursor = ""; didReset = true
+                else
+                    newCursor = nextCur
+                end
+            end
+            task.wait(0.04)
+        end
+
+        preFetchedPick      = pick
+        preFetchedNewCursor = newCursor
+        preFetchedVisited   = visited
+        preFetching         = false
+        if pick then
+            log("Pre-fetch ready: " .. pick.id:sub(1,18) .. " | " .. (pick.playing or 0) .. "p")
+        else
+            log("Pre-fetch: no pick found")
+        end
+    end)
+end
+
 local function doTeleport()
     queueSelf()
-    task.wait(0.15)
 
-    -- load state from file
-    local visited = loadV()
-    local cursor  = loadCursor()
-    visited[game.JobId] = true  -- always mark current as visited
+    -- If pre-fetch isn't done yet, wait up to 8s for it
+    local waited = 0
+    while preFetching and waited < 8 do
+        task.wait(0.1)
+        waited = waited + 0.1
+    end
 
-    log("doTeleport: visited=" .. (function() local n=0; for _ in pairs(visited) do n=n+1 end; return n end)()
-        .. " cursor=" .. (cursor == "" and "START" or cursor:sub(1,12)))
+    local pick
+    local visited
+    local newCursor
 
-    local pick       = nil
-    local newCursor  = cursor
-    local tries      = 0
-    local didReset   = false
-
-    -- walk pages until we find an unvisited server
-    while tries < 30 do
-        tries = tries + 1
-        local data, nextCur = getServers(newCursor)
-
-        if not data then
-            log("HTTP fail on try " .. tries)
-            task.wait(0.5)
-            -- retry same cursor
-        else
-            log("Try " .. tries .. ": got " .. #data .. " servers")
-            for _, srv in ipairs(data) do
-                if type(srv.id) == "string"
-                and srv.id ~= game.JobId
-                and not visited[srv.id]
-                and type(srv.playing) == "number"
-                and srv.playing >= MIN_PLAYERS then
-                    pick      = srv
-                    newCursor = nextCur  -- save cursor AFTER this page
-                    break
-                end
-            end
-            if pick then break end
-
-            -- no pick on this page
-            if nextCur == "" then
-                -- end of list
-                if didReset then
-                    -- already reset once, just pick anything not current
-                    for _, srv in ipairs(data) do
-                        if type(srv.id) == "string" and srv.id ~= game.JobId then
-                            pick      = srv
-                            newCursor = ""
-                            break
-                        end
-                    end
-                    if pick then break end
-                    log("No servers at all")
-                    TeleportService:Teleport(PlaceId, LP)
-                    return
-                end
-                -- reset visited list and start over from page 1
-                log("End of list - resetting visited")
-                visited   = {}
-                visited[game.JobId] = true
-                newCursor = ""
-                didReset  = true
+    if preFetchedPick then
+        -- Use the pre-fetched result - instant!
+        pick       = preFetchedPick
+        visited    = preFetchedVisited
+        newCursor  = preFetchedNewCursor
+        -- clear so next hop triggers a fresh fetch
+        preFetchedPick    = nil
+        preFetchedVisited = nil
+        log("Using pre-fetched pick (waited " .. waited .. "s)")
+    else
+        -- No pre-fetch available - do it now (slow path, shouldn't normally happen)
+        log("No pre-fetch - fetching now")
+        visited  = loadV()
+        local cursor = loadCursor()
+        visited[game.JobId] = true
+        pick = nil; newCursor = cursor
+        local tries = 0; local didReset = false
+        while tries < 30 do
+            tries = tries + 1
+            local data, nextCur = getServers(newCursor)
+            if not data then task.wait(0.5)
             else
-                newCursor = nextCur
+                for _, srv in ipairs(data) do
+                    if type(srv.id) == "string" and srv.id ~= game.JobId
+                    and not visited[srv.id]
+                    and type(srv.playing) == "number"
+                    and srv.playing >= MIN_PLAYERS then
+                        pick = srv; newCursor = nextCur; break
+                    end
+                end
+                if pick then break end
+                if nextCur == "" then
+                    if didReset then break end
+                    visited = {}; visited[game.JobId] = true; newCursor = ""; didReset = true
+                else newCursor = nextCur end
             end
+            task.wait(0.04)
         end
-        task.wait(0.05)
     end
 
     if not pick then
-        log("Gave up after " .. tries .. " tries - plain Teleport")
-        saveV(visited, "")
+        log("No pick at all - plain Teleport")
         TeleportService:Teleport(PlaceId, LP)
         return
     end
 
-    -- mark picked server as visited and save EVERYTHING before teleporting
+    -- Save before teleporting
     visited[pick.id] = true
     saveV(visited, newCursor)
 
-    log("HOP -> " .. pick.id .. " | " .. (pick.playing or 0) .. "p | tries=" .. tries)
-
+    log("HOP -> " .. pick.id .. " | " .. (pick.playing or 0) .. "p")
     TeleportService:TeleportToPlaceInstance(PlaceId, pick.id, LP)
 
-    -- fallback if didn't fire in 10s
     task.wait(10)
     TeleportService:Teleport(PlaceId, LP)
 end
+
+-- Kick off first pre-fetch immediately on script start
+task.spawn(fetchNextPick)
 
 -- ================================================================
 -- WEBHOOK
@@ -1178,7 +1231,11 @@ local function startHunt()
     task.spawn(function()
         while hunting do
 
-            -- STEP 1: wait for animals
+            -- STEP 1: kick off next server pre-fetch immediately
+            -- This runs concurrently while we wait + scan, making hop instant
+            task.spawn(fetchNextPick)
+
+            -- wait for animals
             rebuildCache()
             local t0     = tick()
             local loaded = false
