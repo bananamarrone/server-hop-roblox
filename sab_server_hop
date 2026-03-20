@@ -310,11 +310,10 @@ end
 
 -- ================================================================
 -- SERVER HOP
--- Strategy: fetch ONE page of servers, pick a random unvisited one,
--- teleport directly to it with TeleportToPlaceInstance.
--- Visited IDs saved to file so we never repeat across teleports.
--- No pre-fetch, no background threads, no complexity.
--- Straightforward: fetch → pick → go. Takes <1s.
+-- Server list is loaded ONCE at startup and kept in memory.
+-- After each hop the list refreshes in the background.
+-- Hop itself is instant: just pick next item from the list and go.
+-- Visited IDs saved to file to survive teleport restarts.
 -- ================================================================
 local VISITED_FILE = "BSH_visited.json"
 
@@ -323,122 +322,149 @@ local function readVisited()
     if not ok or not raw or raw == "" then return {} end
     local ok2, t = pcall(HttpService.JSONDecode, HttpService, raw)
     if not ok2 or type(t) ~= "table" then return {} end
-    -- remove special keys, return only job IDs
-    local ids = {}
+    local out = {}
     for k in pairs(t) do
-        if k ~= "__cursor" and type(k) == "string" and #k > 10 then
-            ids[k] = true
-        end
+        if type(k) == "string" and #k > 10 then out[k] = true end
     end
-    return ids
+    return out
 end
 
 local function writeVisited(ids)
     local ok, enc = pcall(HttpService.JSONEncode, HttpService, ids)
-    if ok then pcall(writefile, VISITED_FILE, enc) end
+    if ok and enc then pcall(writefile, VISITED_FILE, enc) end
 end
 
--- On startup: mark current server as visited immediately
-local _visited = readVisited()
-_visited[game.JobId] = true
-writeVisited(_visited)
+-- in-memory server queue: list of job IDs ready to hop to
+local serverQueue  = {}
+local queueBusy    = false
+
+local function buildQueue()
+    if queueBusy then return end
+    queueBusy = true
+    task.spawn(function()
+        local visited = readVisited()
+        visited[game.JobId] = true
+
+        local ids      = {}
+        local cursor   = ""
+        local didReset = false
+        local pages    = 0
+
+        repeat
+            pages = pages + 1
+            local url = ("https://games.roblox.com/v1/games/%d/servers/Public"
+                .. "?sortOrder=Asc&excludeFullGames=true&limit=100%s"):format(
+                PlaceId, cursor ~= "" and ("&cursor="..cursor) or "")
+            local ok, body = pcall(game.HttpGet, game, url)
+            local nxt = ""
+            if ok and body then
+                local ok2, res = pcall(HttpService.JSONDecode, HttpService, body)
+                if ok2 and res and type(res.data) == "table" then
+                    for _, srv in ipairs(res.data) do
+                        if type(srv.id) == "string"
+                        and srv.id ~= game.JobId
+                        and not visited[srv.id] then
+                            table.insert(ids, srv.id)
+                        end
+                    end
+                    if type(res.nextPageCursor) == "string"
+                    and res.nextPageCursor ~= ""
+                    and res.nextPageCursor ~= "null" then
+                        nxt = res.nextPageCursor
+                    end
+                end
+            end
+            if nxt == "" then
+                if #ids == 0 and not didReset then
+                    -- all visited - wipe and retry once
+                    visited = {[game.JobId] = true}
+                    didReset = true
+                    pages = 0
+                else
+                    break
+                end
+            else
+                cursor = nxt
+            end
+            task.wait(0.05)
+        until pages > 20
+
+        -- shuffle for randomness
+        for i = #ids, 2, -1 do
+            local j = math.random(1, i)
+            ids[i], ids[j] = ids[j], ids[i]
+        end
+
+        serverQueue = ids
+        queueBusy   = false
+        log("Queue ready: " .. #ids .. " servers")
+    end)
+end
+
+-- mark current server visited and start building queue immediately
+local _v0 = readVisited()
+_v0[game.JobId] = true
+writeVisited(_v0)
+buildQueue()
 
 local function doTeleport()
-    if not hunting then return end
     queueSelf()
 
-    -- Read visited fresh from file every hop
-    local visited = readVisited()
-    visited[game.JobId] = true
+    -- wait for queue to be ready (should already be done)
+    local w = 0
+    while queueBusy and w < 6 do task.wait(0.1); w = w + 0.1 end
 
-    -- Count visited for logging
-    local nVisited = 0
-    for _ in pairs(visited) do nVisited = nVisited + 1 end
-    log("Hopping | visited=" .. nVisited)
+    local picked = nil
 
-    -- Try up to 5 random cursor offsets to get variety
-    -- Each cursor offset gives a different slice of the server list
-    local cursors = {"", "", "", "", ""}  -- start with page 1 multiple times
-    -- We'll try page 1 first (fastest), then advance if all visited
-
-    local pick = nil
-    local pagesTried = 0
-    local cursor = ""
-    local didReset = false
-
-    repeat
-        pagesTried = pagesTried + 1
-
+    if #serverQueue > 0 then
+        -- take first from queue (already shuffled)
+        picked = table.remove(serverQueue, 1)
+        log("Queue hop -> " .. picked:sub(1,18) .. " | " .. #serverQueue .. " left")
+        -- if queue is getting low, refresh in background
+        if #serverQueue < 5 then
+            task.spawn(buildQueue)
+        end
+    else
+        -- queue empty or timed out - fetch one page right now as fallback
+        log("Queue empty - quick fetch")
+        local visited = readVisited()
+        visited[game.JobId] = true
         local url = ("https://games.roblox.com/v1/games/%d/servers/Public"
             .. "?sortOrder=Asc&excludeFullGames=true&limit=100"):format(PlaceId)
-        if cursor ~= "" then url = url .. "&cursor=" .. cursor end
-
         local ok, body = pcall(game.HttpGet, game, url)
         if ok and body then
             local ok2, res = pcall(HttpService.JSONDecode, HttpService, body)
-            if ok2 and res and type(res.data) == "table" and #res.data > 0 then
-                -- collect all unvisited candidates from this page
-                local candidates = {}
+            if ok2 and res and type(res.data) == "table" then
+                local cands = {}
                 for _, srv in ipairs(res.data) do
                     if type(srv.id) == "string"
                     and srv.id ~= game.JobId
                     and not visited[srv.id] then
-                        table.insert(candidates, srv)
+                        table.insert(cands, srv.id)
                     end
                 end
-                log("Page " .. pagesTried .. ": " .. #res.data .. " servers, " .. #candidates .. " unvisited")
-                if #candidates > 0 then
-                    -- pick a random one
-                    pick = candidates[math.random(1, #candidates)]
-                end
-                -- advance cursor for next attempt if needed
-                local nxt = res.nextPageCursor
-                if type(nxt) == "string" and nxt ~= "" and nxt ~= "null" then
-                    cursor = nxt
-                else
-                    -- end of list: reset visited and try again from page 1
-                    if not didReset then
-                        log("End of list - resetting visited")
-                        visited = {[game.JobId] = true}
-                        cursor = ""
-                        didReset = true
-                    else
-                        -- already reset, just pick any server
-                        for _, srv in ipairs(res.data) do
-                            if type(srv.id) == "string" and srv.id ~= game.JobId then
-                                pick = srv
-                                break
-                            end
-                        end
-                    end
+                if #cands > 0 then
+                    picked = cands[math.random(1, #cands)]
                 end
             end
-        else
-            log("HTTP error on page " .. pagesTried)
         end
-
-        if not pick then task.wait(0.05) end
-    until pick or pagesTried >= 8
-
-    -- Final check: still hunting?
-    if not hunting then
-        log("Stopped before teleport")
-        return
+        -- rebuild queue for next time
+        task.spawn(buildQueue)
     end
 
-    if not pick then
-        log("No server found - plain Teleport fallback")
+    if not picked then
+        log("No server - plain Teleport")
         TeleportService:Teleport(PlaceId, LP)
         return
     end
 
-    -- Save this server as visited BEFORE teleporting
-    visited[pick.id] = true
-    writeVisited(visited)
+    -- mark as visited and save before teleporting
+    local vis = readVisited()
+    vis[picked] = true
+    writeVisited(vis)
 
-    log("-> " .. pick.id:sub(1,18) .. " | " .. (pick.playing or 0) .. "p | pages=" .. pagesTried)
-    TeleportService:TeleportToPlaceInstance(PlaceId, pick.id, LP)
-    -- fallback if teleport didn't fire in 10s
+    log("HOP -> " .. picked)
+    TeleportService:TeleportToPlaceInstance(PlaceId, picked, LP)
     task.wait(10)
     TeleportService:Teleport(PlaceId, LP)
 end
