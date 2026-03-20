@@ -75,8 +75,11 @@ local Cfg = {
     wasHunting    = false,
 }
 
+-- declare here so saveState can reference them before GUI declares them
+local hopCount = 0
+local history  = {}
+
 local function saveState()
-    -- saves settings + hunting state + hops + history all in one file
     local payload = {
         targetValue   = Cfg.targetValue,
         blacklist     = Cfg.blacklist,
@@ -370,6 +373,8 @@ local pfCursor  = ""    -- cursor after pick's page
 local pfBusy    = false
 
 local function doPreFetch()
+    -- if a pick is already ready, no need to fetch again
+    if pfPick then return end
     if pfBusy then return end
     pfBusy = true
     task.spawn(function()
@@ -430,6 +435,8 @@ local function doTeleport()
         newCursor = pfCursor
         pfPick = nil; pfIds = nil
         log("Instant hop (waited " .. string.format("%.1f", w) .. "s)")
+        -- immediately start fetching the NEXT server for the hop after this one
+        task.spawn(doPreFetch)
     else
         -- pre-fetch found nothing or wasn't ready: fetch now with no filters
         log("No pre-fetch result - fetching now")
@@ -462,6 +469,11 @@ local function doTeleport()
         return
     end
 
+    -- final stop check before we commit to teleporting
+    if not hunting then
+        log("Hunt stopped before teleport - aborting hop")
+        return
+    end
     ids[pick.id] = true
     vWrite(ids, newCursor)
     log("HOP -> " .. pick.id .. " | " .. (pick.playing or 0) .. "p")
@@ -532,8 +544,6 @@ end
 -- ================================================================
 -- HISTORY  (survives teleports via getgenv)
 -- ================================================================
-local history = _loaded_history
-
 local function pushHistory(val, name, plrs)
     table.insert(history, 1, {val=val, name=name, plrs=plrs or 0})
     if #history > 12 then table.remove(history) end
@@ -1176,6 +1186,8 @@ end)
 local hunting  = false
 hopCount = _loaded_hopCount
 getgenv().BSH_HOP_COUNT = hopCount
+-- history already declared above; assign loaded values now
+history = _loaded_history
 HopL.Text = "HOPS: " .. hopCount
 
 local function setStatus(txt, r, g, b)
