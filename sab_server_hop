@@ -309,181 +309,139 @@ local function getServers(cursor)
 end
 
 -- ================================================================
--- SERVER HOP - simple and reliable
--- One file: BSH_visited.json stores {[jobId]=true, __cursor="..."}
--- Pre-fetch runs during scan so hop is instant when ready
+-- SERVER HOP
+-- Strategy: fetch ONE page of servers, pick a random unvisited one,
+-- teleport directly to it with TeleportToPlaceInstance.
+-- Visited IDs saved to file so we never repeat across teleports.
+-- No pre-fetch, no background threads, no complexity.
+-- Straightforward: fetch → pick → go. Takes <1s.
 -- ================================================================
 local VISITED_FILE = "BSH_visited.json"
 
-local function vRead()
+local function readVisited()
     local ok, raw = pcall(readfile, VISITED_FILE)
-    if not ok or not raw or raw == "" then return {}, "" end
+    if not ok or not raw or raw == "" then return {} end
     local ok2, t = pcall(HttpService.JSONDecode, HttpService, raw)
-    if not ok2 or type(t) ~= "table" then return {}, "" end
+    if not ok2 or type(t) ~= "table" then return {} end
+    -- remove special keys, return only job IDs
     local ids = {}
-    local cur = ""
-    for k, v in pairs(t) do
-        if k == "__cursor" then
-            cur = type(v) == "string" and v ~= "null" and v or ""
-        else
+    for k in pairs(t) do
+        if k ~= "__cursor" and type(k) == "string" and #k > 10 then
             ids[k] = true
         end
     end
-    return ids, cur
+    return ids
 end
 
-local function vWrite(ids, cursor)
-    local t = {}
-    for k in pairs(ids) do t[k] = true end
-    t["__cursor"] = cursor or ""
-    local ok, enc = pcall(HttpService.JSONEncode, HttpService, t)
+local function writeVisited(ids)
+    local ok, enc = pcall(HttpService.JSONEncode, HttpService, ids)
     if ok then pcall(writefile, VISITED_FILE, enc) end
 end
 
-local function getPage(cursor)
-    local url = ("https://games.roblox.com/v1/games/%d/servers/Public"
-        .. "?sortOrder=Asc&excludeFullGames=true&limit=25%s"):format(
-        PlaceId,
-        (cursor and cursor ~= "") and ("&cursor=" .. cursor) or "")
-    local ok, body = pcall(game.HttpGet, game, url)
-    if not ok or not body then return nil, nil end
-    local ok2, res = pcall(HttpService.JSONDecode, HttpService, body)
-    if not ok2 or type(res) ~= "table" or type(res.data) ~= "table" then return nil, nil end
-    local nxt = res.nextPageCursor
-    if type(nxt) ~= "string" or nxt == "null" or nxt == "" then nxt = "" end
-    return res.data, nxt
-end
-
--- find first unvisited server not equal to current jobId
-local function findPick(data, ids)
-    for _, srv in ipairs(data) do
-        if type(srv.id) == "string"
-        and srv.id ~= game.JobId
-        and not ids[srv.id] then
-            return srv
-        end
-    end
-    return nil
-end
-
--- pre-fetch state
-local pfPick    = nil   -- the ready pick
-local pfIds     = nil   -- visited table at time of fetch
-local pfCursor  = ""    -- cursor after pick's page
-local pfBusy    = false
-
-local function doPreFetch()
-    -- if a pick is already ready, no need to fetch again
-    if pfPick then return end
-    if pfBusy then return end
-    pfBusy = true
-    task.spawn(function()
-        local ids, cursor = vRead()
-        ids[game.JobId] = true
-
-        local pick      = nil
-        local newCursor = cursor
-        local reset     = false
-        local pages     = 0
-
-        while pages < 40 do
-            pages = pages + 1
-            local data, nxt = getPage(newCursor)
-            if data then
-                pick = findPick(data, ids)
-                if pick then
-                    newCursor = nxt
-                    break
-                end
-                if nxt == "" then
-                    if reset then break end  -- tried everything twice
-                    -- end of list: wipe visited and restart from page 1
-                    ids = {}; ids[game.JobId] = true
-                    newCursor = ""; reset = true
-                else
-                    newCursor = nxt
-                end
-            end
-            task.wait(0.02)
-        end
-
-        pfPick   = pick
-        pfIds    = ids
-        pfCursor = newCursor
-        pfBusy   = false
-
-        if pick then
-            log("Pre-fetch OK: " .. pick.id:sub(1,16))
-        else
-            log("Pre-fetch EMPTY after " .. pages .. " pages")
-        end
-    end)
-end
+-- On startup: mark current server as visited immediately
+local _visited = readVisited()
+_visited[game.JobId] = true
+writeVisited(_visited)
 
 local function doTeleport()
+    if not hunting then return end
     queueSelf()
 
-    -- wait for pre-fetch (should already be done, but cap at 6s)
-    local w = 0
-    while pfBusy and w < 6 do task.wait(0.05); w = w + 0.05 end
+    -- Read visited fresh from file every hop
+    local visited = readVisited()
+    visited[game.JobId] = true
 
-    local pick, ids, newCursor
+    -- Count visited for logging
+    local nVisited = 0
+    for _ in pairs(visited) do nVisited = nVisited + 1 end
+    log("Hopping | visited=" .. nVisited)
 
-    if pfPick then
-        pick      = pfPick
-        ids       = pfIds
-        newCursor = pfCursor
-        pfPick = nil; pfIds = nil
-        log("Instant hop (waited " .. string.format("%.1f", w) .. "s)")
-        -- immediately start fetching the NEXT server for the hop after this one
-        task.spawn(doPreFetch)
-    else
-        -- pre-fetch found nothing or wasn't ready: fetch now with no filters
-        log("No pre-fetch result - fetching now")
-        ids, newCursor = vRead()
-        ids[game.JobId] = true
-        local reset = false
-        local pages = 0
-        while pages < 40 and not pick do
-            pages = pages + 1
-            local data, nxt = getPage(newCursor)
-            if data then
-                pick = findPick(data, ids)
-                if pick then newCursor = nxt; break end
-                if nxt == "" then
-                    if reset then break end
-                    ids = {}; ids[game.JobId] = true; newCursor = ""; reset = true
+    -- Try up to 5 random cursor offsets to get variety
+    -- Each cursor offset gives a different slice of the server list
+    local cursors = {"", "", "", "", ""}  -- start with page 1 multiple times
+    -- We'll try page 1 first (fastest), then advance if all visited
+
+    local pick = nil
+    local pagesTried = 0
+    local cursor = ""
+    local didReset = false
+
+    repeat
+        pagesTried = pagesTried + 1
+
+        local url = ("https://games.roblox.com/v1/games/%d/servers/Public"
+            .. "?sortOrder=Asc&excludeFullGames=true&limit=100"):format(PlaceId)
+        if cursor ~= "" then url = url .. "&cursor=" .. cursor end
+
+        local ok, body = pcall(game.HttpGet, game, url)
+        if ok and body then
+            local ok2, res = pcall(HttpService.JSONDecode, HttpService, body)
+            if ok2 and res and type(res.data) == "table" and #res.data > 0 then
+                -- collect all unvisited candidates from this page
+                local candidates = {}
+                for _, srv in ipairs(res.data) do
+                    if type(srv.id) == "string"
+                    and srv.id ~= game.JobId
+                    and not visited[srv.id] then
+                        table.insert(candidates, srv)
+                    end
+                end
+                log("Page " .. pagesTried .. ": " .. #res.data .. " servers, " .. #candidates .. " unvisited")
+                if #candidates > 0 then
+                    -- pick a random one
+                    pick = candidates[math.random(1, #candidates)]
+                end
+                -- advance cursor for next attempt if needed
+                local nxt = res.nextPageCursor
+                if type(nxt) == "string" and nxt ~= "" and nxt ~= "null" then
+                    cursor = nxt
                 else
-                    newCursor = nxt
+                    -- end of list: reset visited and try again from page 1
+                    if not didReset then
+                        log("End of list - resetting visited")
+                        visited = {[game.JobId] = true}
+                        cursor = ""
+                        didReset = true
+                    else
+                        -- already reset, just pick any server
+                        for _, srv in ipairs(res.data) do
+                            if type(srv.id) == "string" and srv.id ~= game.JobId then
+                                pick = srv
+                                break
+                            end
+                        end
+                    end
                 end
             end
-            task.wait(0.02)
+        else
+            log("HTTP error on page " .. pagesTried)
         end
+
+        if not pick then task.wait(0.05) end
+    until pick or pagesTried >= 8
+
+    -- Final check: still hunting?
+    if not hunting then
+        log("Stopped before teleport")
+        return
     end
 
     if not pick then
-        -- absolute last resort: plain Teleport
-        log("No server found - plain Teleport")
-        vWrite({[game.JobId]=true}, "")
+        log("No server found - plain Teleport fallback")
         TeleportService:Teleport(PlaceId, LP)
         return
     end
 
-    -- final stop check before we commit to teleporting
-    if not hunting then
-        log("Hunt stopped before teleport - aborting hop")
-        return
-    end
-    ids[pick.id] = true
-    vWrite(ids, newCursor)
-    log("HOP -> " .. pick.id .. " | " .. (pick.playing or 0) .. "p")
+    -- Save this server as visited BEFORE teleporting
+    visited[pick.id] = true
+    writeVisited(visited)
+
+    log("-> " .. pick.id:sub(1,18) .. " | " .. (pick.playing or 0) .. "p | pages=" .. pagesTried)
     TeleportService:TeleportToPlaceInstance(PlaceId, pick.id, LP)
+    -- fallback if teleport didn't fire in 10s
     task.wait(10)
     TeleportService:Teleport(PlaceId, LP)
 end
-
--- start pre-fetching immediately
-task.spawn(doPreFetch)
 
 -- ================================================================
 -- WEBHOOK
@@ -1269,7 +1227,6 @@ local function startHunt()
 
             -- STEP 1: kick off next server pre-fetch immediately
             -- This runs concurrently while we wait + scan, making hop instant
-            task.spawn(doPreFetch)
 
             -- wait for animals
             rebuildCache()
@@ -1355,9 +1312,6 @@ local function startHunt()
                     BestL.TextColor3 = C3(20, 34, 60)
                 end
             end
-
-            -- kick off next pre-fetch before hopping so it runs during teleport load
-            task.spawn(doPreFetch)
             doHop()
         end
     end)
